@@ -27,6 +27,7 @@ import type {
 } from "@/app/dummy-data/types";
 import type {
   BackendBranches,
+  BackendHierarchy,
   BackendDataset,
   BackendForecastList,
   BackendHealthCheck,
@@ -204,8 +205,13 @@ export const backend = {
 
   /* ---- dashboards ------------------------------------------------------- */
 
-  getOverview: (datasetId: string) =>
-    request<OverviewResponse>(`/api/v1/overview/${datasetId}`),
+  // `location` scopes the whole response to one branch. The backend has
+  // supported it since B11; this client did not pass it, which meant a dataset
+  // holding several branches could only ever be read as one lump.
+  getOverview: (datasetId: string, location?: string) =>
+    request<OverviewResponse>(
+      `/api/v1/overview/${datasetId}${location ? `?location=${encodeURIComponent(location)}` : ""}`,
+    ),
 
   getDemand: (datasetId: string, filters: Record<string, string | undefined> = {}) => {
     const query = new URLSearchParams();
@@ -259,7 +265,7 @@ export const backend = {
     request<BackendBranches>(`/api/v1/branches/${datasetId}`),
 
   getHierarchy: (datasetId: string) =>
-    request<Record<string, unknown>>(`/api/v1/datasets/${datasetId}/hierarchy`),
+    request<BackendHierarchy>(`/api/v1/datasets/${datasetId}/hierarchy`),
 
   sendSlackAlert: (datasetId: string, seriesIds: string[], limit = 5) =>
     request<{ sent: boolean; message?: string; reason?: string }>("/api/v1/alerts/slack", {

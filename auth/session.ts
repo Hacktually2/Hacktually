@@ -151,6 +151,42 @@ export async function requireForecastAccess(forecastProjectId: string): Promise<
   return user;
 }
 
+/**
+ * Does this person own the project a forecasting dataset belongs to?
+ *
+ * Non-throwing, because the caller is usually a page deciding whether to
+ * render an owner-only section. A manager opening the dashboard should find
+ * the section absent, not find the whole page gone — hiding is the right
+ * failure here, and `requireForecastOwner` below is what actually refuses.
+ *
+ * An unclaimed dataset answers true. That is the same rule
+ * `requireForecastAccess` already applies: nothing in this layer governs a
+ * dataset pushed straight into forecasting, so there is no owner to compare
+ * against and signed-in remains the floor. It grants nothing new, because a
+ * caller who reaches an unclaimed dataset can already read all of it.
+ */
+export async function isForecastOwner(forecastProjectId: string): Promise<boolean> {
+  const user = await getSession();
+  if (!user) return false;
+  const branch = findBranchByForecastProject(forecastProjectId);
+  if (!branch) return true;
+  return getProject(branch.project_id)?.owner_id === user.id;
+}
+
+/**
+ * The owner of the project a forecasting dataset belongs to, or a 404.
+ *
+ * For the capabilities a branch manager must not have even by direct POST —
+ * scenario simulation is one, because it is a whole-network planning tool and
+ * a manager is scoped to one branch. A Server Action is reachable without the
+ * page that renders it, so hiding the UI is not the control; this is.
+ */
+export async function requireForecastOwner(forecastProjectId: string): Promise<AuthUser> {
+  const user = await requireSession();
+  if (!(await isForecastOwner(forecastProjectId))) notFound();
+  return user;
+}
+
 /** For the owner-only surfaces: inviting managers, deciding requests. */
 export async function requireOwner(projectId: string): Promise<{
   user: AuthUser;

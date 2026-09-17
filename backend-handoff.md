@@ -107,18 +107,18 @@ punya banyak file), plus `needs_attention`, dan `health` dalam bentuk
 | **B1** historical actuals 🔴 | ⚠️ sebagian | Chart agregat di `/overview` dan `/demand` **sudah** membawa history + forecast, sudah di-stitch di titik sambung, `cutoff_index` benar. Per-series (`/forecasts/{id}/{series}`) **belum** — masih forecast saja |
 | **B2** sample values, unmapped_columns | ✅ | `sample_values`, `unmapped_columns`, `resolved_by` ada. `resolved_by` masih ditebak dari teks `reason`, jadi anggap indikatif |
 | **B3** findings title/detail/action | ⚠️ sebagian | `{id, severity, title, detail, action}` ada, tapi `detail` masih menduplikasi `title`. Belum benar-benar dua level |
-| **B4** risk vocabulary | ✅ | `healthy \| watch \| at_risk \| critical`, `critical` sekarang terjangkau. Ambangnya relatif ke lead time, bukan hitungan hari tetap |
+| **B4** risk vocabulary | ⚠️ sebagian | `healthy \| watch \| at_risk \| critical`, ambangnya relatif ke lead time. **Tapi `watch` tidak pernah muncul di setelan default** — lihat §9 |
 | **B5** inventory position | ✅ | `current_stock`, `lead_time_demand`, `safety_stock`, `forecast_demand`, `coverage_days`, `lead_time_days`, `moq` sebagai field bernama. Tidak perlu regex lagi |
 | **B6** display names | ❌ | Masih `item_name = item_id`. `category` sudah ada. `nama_produk`/`nama_cabang` di CSV-mu masih tidak terpakai |
 | **B7** project concept | ✅ | `GET /projects` dan `/projects/{id}`. **Tapi** `organisation` kuambil dari nama file — kamu bilang itu milik auth layer-mu, jadi **abaikan field itu** dan pakai punyamu |
-| **B8** job stage enum | ✅ | `status` enum + `steps[]` dengan `key` yang stabil antar-poll |
+| **B8** job stage enum | ✅ | `status` enum + `steps[]` dengan `key` yang stabil antar-poll. **Urutan `steps[]` berubah** — lihat §9 |
 | **B9** overview | ✅ | `OverviewResponse` lengkap. `KpiMetric.value` `null` + `unavailable_reason` untuk yang tidak bisa dihitung (mis. inventory value tanpa unit cost) |
 | **B10** demand | ✅ | `DemandResponse` lengkap, filter server-side, `active_filters` dikembalikan |
 | **B11** branch scoping 🔴 | ✅ | `?location=` di `/overview`, `/demand`, `/recommendations`, `/forecasts`, `/branches`. Nama parameternya `location` (sesuai kontrak §7), bukan `location_id` |
 | **B12** activity log | ❌ | Belum ada |
 | **B13** append/merge dry run | ⚠️ sebagian | `POST /datasets/{id}/append` ada dan jalan. `dry_run` + `MergePreview` **belum** |
 | **B14** planning parameters | ✅ | `GET/PUT /datasets/{id}/params` — path-nya `params`, bukan `parameters`. Lihat §5 soal service level |
-| **B15** scenario simulation | ❌ | Belum ada |
+| **B15** scenario simulation | ⚠️ sebagian | UI-nya jalan dan **sudah digating owner-only**, tapi mesinnya masih `app/dummy-data/simulation.ts` di atas fixture. Endpoint `POST /api/v1/simulate/{id}` belum ada. Lihat §9 |
 
 ### Catatan kecil dari §5 migration-report
 
@@ -472,3 +472,225 @@ aslinya.
 Untuk pitch: yang boleh diklaim adalah *deteksi data pribadi*, *isolasi tenant*,
 *penghapusan yang mencapai file asli*, dan *hanya deret angka tanpa label yang
 keluar ke GPU*. Yang **belum** boleh diklaim: enkripsi at-rest dan audit trail.
+
+---
+
+## 9. Perubahan terbaru — mock mode, node view, gating owner
+
+Empat hal berubah setelah §8. Dua di antaranya menyentuh kode yang sudah kamu
+tulis, jadi baca dua yang pertama.
+
+### 9.1 Urutan `steps[]` berubah — ini bisa mengubah tampilan processing screen
+
+Dulu `JOB_STEPS` menaruh *"Generating forecasts"* **sebelum** *"Backtesting and
+selecting"*. Itu tidak cocok dengan urutan pipeline sebenarnya: kandidat model
+bertanding dulu, pemenangnya dipilih, **baru** pemenang itu meramal.
+
+Akibatnya indikator step **berjalan mundur** di tengah setiap run — dari step 5
+ke step 4 — lalu maju lagi. Kalau kamu pernah lihat itu dan menganggapnya bug
+polling di sisimu, bukan: itu backend.
+
+Urutan sekarang:
+
+```
+upload · profile · clean · classify · validate · forecast · decide
+```
+
+`key` setiap step tidak berubah, jadi kalau kamu render `steps[]` apa adanya
+dalam urutan array, tidak ada yang perlu kamu sentuh. Yang perlu diubah hanya
+kalau kamu **hardcode** urutan atau memetakan `key` ke posisi tetap.
+
+Penyebab aslinya juga diperbaiki: indeks step sekarang diturunkan dari `stage`
+yang dilaporkan pipeline (`STAGE_TO_STEP`), bukan dari kata `status`. Enum
+`status` tetap **persis sama** — tidak ada nilai baru, karena itu kontrak yang
+kamu pakai untuk tipe. Alasan dipisah: `status` tidak punya nilai untuk
+"deciding", jadi dua stage terakhir harus berbagi satu kata, sementara indeks
+step tidak punya batasan itu dan harus selalu maju.
+
+### 9.2 What-if sekarang owner-only — signature `simulate` berubah
+
+Dulu: `simulate(datasetId, scenario)` dengan `requireSession()` — **manager mana
+pun bisa menjalankannya.**
+
+Sekarang: `simulate(projectId, datasetId, scenario)` dengan
+`requireForecastOwner(projectId)`.
+
+Dan `ScenarioSimulator` tidak lagi menerima prop `datasetId`. Prop `run`
+sekarang `(scenario) => Promise<ScenarioOutcome>`, di-bind di server:
+
+```tsx
+run={simulate.bind(null, projectId, project.dataset_id)}
+```
+
+Browser jadi tidak pernah tahu dataset mana yang sedang disimulasikan dan tidak
+bisa mengarahkannya ke dataset lain.
+
+**Kenapa owner, bukan manager.** Tuas di panel itu lead time supplier, service
+level, MOQ, dan kapasitas order. Itu semua syarat komersial tingkat jaringan,
+bukan pilihan operasional satu cabang — manager yang menggesernya sedang
+merencanakan dengan angka yang bukan dia yang tetapkan, di atas katalog yang dia
+cuma lihat sebagian.
+
+Manager tidak mendapat layar kosong. Panelnya diganti penjelasan, karena fitur
+yang hilang tanpa keterangan terbaca sebagai rusak. Tapi yang jadi kontrol bukan
+UI itu — **`requireForecastOwner` di dalam action**, karena Server Action bisa
+dipanggil langsung lewat POST tanpa halaman yang merendernya.
+
+Dua helper baru di `auth/session.ts`, keduanya di-reexport dari `lib/session.ts`:
+
+| Helper | Sifat | Untuk |
+| --- | --- | --- |
+| `isForecastOwner(id)` | `Promise<boolean>`, tidak throw | halaman yang memutuskan merender atau tidak |
+| `requireForecastOwner(id)` | throw `notFound()` | Server Action dan write |
+
+Dataset yang tidak diklaim cabang mana pun menjawab `true` — aturan yang sama
+dengan `requireForecastAccess`, dan tidak memberi akses baru karena pemanggil
+yang sampai ke dataset tak-berklaim sudah bisa membaca seluruhnya.
+
+### 9.3 Route baru: `/projects/[projectId]/network`
+
+Peta jaringan cabang. **`[projectId]` di sini adalah auth project id**
+(`prj_...`), bukan forecast project id — sama seperti `/team`, berbeda dengan
+`/dashboard`. Dua namespace berbeda di satu segmen URL; jangan tertukar.
+
+Satu route, dua produk, persis pola `/team`:
+
+- **owner** → semua cabang di project, sebagai node mengelilingi satu pusat
+- **manager** → hanya cabang yang dia pegang
+
+`requireProjectAccess` yang menyaring, jadi halamannya tidak pernah memfilter
+berdasarkan peran sendiri. Rata-rata jaringan dihitung tapi **hanya diberikan ke
+owner** — tidak ada alasan manager butuh angka yang menggambarkan cabang yang
+bukan tanggung jawabnya.
+
+Warna node = porsi katalog cabang yang akan habis di dalam horizon, dihitung
+dari `inventory.bands` yang backend kirim. Komponennya **tidak pernah**
+memutuskan risiko, hanya menjumlahkan. Ambang warnanya (5% / 15% / 30%) adalah
+penilaian, dan dicetak di legend supaya tidak tersembunyi.
+
+Node digambar kosong (garis putus-putus) kalau `Sourced.live` false. Itu sengaja:
+angka fixture identik untuk setiap cabang, jadi merendernya berarti mewarnai
+enam node dengan warna yang sama lalu menyebutnya peta jaringan.
+
+Setiap node bisa di-**tab** dan merespons focus, bukan hover saja — chart yang
+butuh mouse adalah chart yang sebagian orang tidak bisa baca.
+
+### 9.4 Mock mode: backtest tersampel
+
+`MOCK_MODE=1`, atau `{"mock": true}` per request di
+`POST /datasets/{id}/forecast`.
+
+Bukan angka karangan. Yang terjadi: sebagian representatif dari **setiap demand
+class** di-backtest sungguhan, lalu sisanya mewarisi rata-rata terukur
+class-nya.
+
+Kenapa ini sah dan bukan akal-akalan: **seleksi model memang sudah bekerja
+begitu.** Dengan 2 validation window, aturan di `backtest.py` menolak pilihan
+per-series dan menerapkan default per demand class ke semuanya — di data VN2 itu
+599 dari 599 series. Jadi run tersampel mencapai **keputusan yang sama** dengan
+run penuh; yang hilang cuma tampilan akurasi per item.
+
+Jejaknya dibawa ke mana-mana, karena WAPE karangan yang sampai ke slide lebih
+buruk daripada demo yang lambat:
+
+- setiap series estimasi menuliskannya di `reason`-nya sendiri
+- `/health` melaporkan `mock_mode`
+- `GET /datasets/{id}/health` membawa `validation` + finding `sampled_validation`
+- `run_forecast` mengembalikan `validation`
+
+Satu hal yang **tidak** bisa disalin antar series: RMSE itu dalam unit, dan
+safety stock dihitung dari situ. Jadi RMSE dibawa sebagai rasio terhadap mean
+demand pemiliknya lalu diskalakan ulang ke tiap series. Kalau disalin mentah,
+barang slow mover dapat buffer sebesar barang fast mover — dan itu muncul di
+layar sebagai usulan pesan ribuan unit.
+
+### 9.5 Temuan: band `watch` tidak pernah muncul di setelan default
+
+`classify_risk` memberi `watch` kalau `coverage_days < lead_time_days * 2`
+**dan** tidak habis di dalam horizon. Dengan default `lead_time_days = 14` dan
+horizon 30: butuh coverage di atas 30 tapi di bawah 28. Mustahil.
+
+Jadi kosakata risiko punya 4 band tapi cuma 3 yang bisa terjadi. Kalau kamu
+sudah bikin state dan warna untuk `watch`, itu **belum pernah** kamu lihat
+terpakai.
+
+Perbaikannya sepele — set `lead_time_days` ke 21 atau lebih:
+
+```
+PUT /api/v1/datasets/{id}/params   {"lead_time_days": 21}
+```
+
+Belum kuubah defaultnya karena 14 hari itu asumsi bisnis, bukan bug, dan
+mengubahnya menggeser setiap rekomendasi. Keputusan kalian.
+
+### 9.6 Dataset demo untuk node view
+
+```
+py -3.11 backend/scripts/make_network_demo.py
+```
+
+Menghasilkan dua file di `data/demo/network/`:
+
+| File | Isi |
+| --- | --- |
+| `penjualan_jaringan.csv` | 6 cabang · 311 series · 264.661 baris · 22 MB · harian, Jan 2024 – Apr 2026 |
+| `cabang_pic.csv` | `kode_cabang, nama_cabang, kota, nama_pic, email_pic, telepon_pic` |
+
+Kesehatan cabangnya **dirancang**, supaya enam node keluar dengan warna yang
+berbeda — peta yang semuanya satu warna tidak mengajarkan apa pun, dan peta yang
+semuanya merah terbaca seperti import gagal:
+
+Kolom "terukur" itu hasil menjalankan pipeline sungguhan, bukan niat generator.
+Keduanya harus sama; kalau beda, generatornya yang salah.
+
+| Cabang | Kota | Item | Rancangan | Terukur | Node |
+| --- | --- | --- | --- | --- | --- |
+| JKT01 | Jakarta Pusat | 86 | 3% | **3%** | hijau |
+| BDG01 | Bandung | 54 | 9% | **9%** | amber |
+| SMG01 | Semarang | 41 | 20% | **20%** | oranye |
+| SBY01 | Surabaya | 68 | 26% | **26%** | oranye |
+| MDN01 | Medan | 37 | 41% | **41%** | merah |
+| DPS01 | Denpasar | 25 | 56% | **56%** | merah |
+
+Butuh tiga kali perbaikan supaya dua kolom itu sama, dan dua penyebabnya layak
+dicatat karena keduanya bukan soal data demo:
+
+**Item sparse tidak bisa dibuat tampak at-risk, di level inventory mana pun.**
+Coverage dinilai dengan menyusuri forecast, dan pada series intermittent titik
+forecast runtuh ke nol — TimesFM mengembalikan 0,14 unit/hari untuk item JKT01
+yang rata-rata 30 hari terakhirnya 55,8. Stok tidak pernah habis melawan
+forecast nol, jadi item itu melapor `healthy` apa pun isinya. Jadi porsi
+attention diambil hanya dari pola non-sparse.
+
+**Versi pertama file ini 34% intermittent + lumpy, dan itu kesalahan.**
+Foundation model hanya unggul 2,0% atas moving average di demand intermittent —
+itu segmen terlemah yang sudah kami ukur sendiri — jadi menaruh sepertiga demo
+di atasnya berarti membidik titik terlemah sendiri. Sekarang 12%, dan item
+sparse mendapat volume yang realistis (0,5–4 unit/hari, bukan 6–120). Dampaknya
+terukur:
+
+| | Sebelum | Sesudah |
+| --- | --- | --- |
+| Series diramal jauh di bawah demand | 107 dari 311 (34%) | **20 dari 311 (6%)** |
+| Total unit/hari yang terlewat | ribuan | **32, se-jaringan** |
+
+20 series sisa itu rata-rata 1,6 unit/hari. Untuk barang selambat itu "tidak
+perlu pesan" memang jawaban yang benar, jadi sisanya wajar. Yang tidak wajar
+adalah versi sebelumnya, yang bilang "tidak perlu pesan" untuk barang 55
+unit/hari.
+
+SKU-nya **sengaja tumpang tindih** antar cabang, supaya rekomendasi transfer
+punya barang nyata untuk dipindahkan. Ukuran katalognya berbeda-beda karena luas
+node menyandikannya.
+
+Yang ditanam cuma posisi inventory, karena inventory adalah satu-satunya kolom
+yang menentukan warna. Demand-nya model sungguhan: ritme mingguan, siklus
+gajian, ramp Lebaran yang bergerak mengikuti kalender lunar, dalam empat pola
+Syntetos-Boylan.
+
+`cabang_pic.csv` memuat nomor telepon format Indonesia **dengan sengaja** —
+upload dan pemindai data pribadi harus menandainya. Itu fiturnya bekerja.
+
+Untuk pitch, sebut ini apa adanya: angka rupiah dan warna cabang berasal dari
+data yang kami bangkitkan. Pipeline, kompetisi model, dan aturan keputusannya
+nyata; file ini panggung, bukan bukti.

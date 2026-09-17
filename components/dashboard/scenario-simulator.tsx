@@ -28,14 +28,16 @@ const NEUTRAL: ScenarioInput = {
 };
 
 export function ScenarioSimulator({
-  datasetId,
   initial,
   run,
 }: {
-  datasetId: string;
   /** Neutral run, computed on the server so the panel opens with real numbers. */
   initial: ScenarioOutcome;
-  run: (datasetId: string, scenario: ScenarioInput) => Promise<ScenarioOutcome>;
+  /**
+   * Bound to its project and dataset on the server. The browser never learns
+   * which dataset it is simulating, and cannot ask for a different one.
+   */
+  run: (scenario: ScenarioInput) => Promise<ScenarioOutcome>;
 }) {
   const [scenario, setScenario] = useState<ScenarioInput>(initial.scenario);
   const [outcome, setOutcome] = useState<ScenarioOutcome>(initial);
@@ -47,10 +49,10 @@ export function ScenarioSimulator({
     if (next === applied.current) return;
     const timer = setTimeout(() => {
       applied.current = next;
-      startTransition(async () => setOutcome(await run(datasetId, scenario)));
+      startTransition(async () => setOutcome(await run(scenario)));
     }, 220);
     return () => clearTimeout(timer);
-  }, [scenario, datasetId, run]);
+  }, [scenario, run]);
 
   const set = <K extends keyof ScenarioInput>(key: K, value: ScenarioInput[K]) =>
     setScenario((s) => ({ ...s, [key]: value }));

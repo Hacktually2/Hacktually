@@ -7,7 +7,9 @@
 export {
   SESSION_COOKIE,
   getSession,
+  isForecastOwner,
   requireForecastAccess,
+  requireForecastOwner,
   requireOwner,
   requireProjectAccess,
   requireSession,

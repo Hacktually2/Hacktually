@@ -161,9 +161,12 @@ export async function getJobSequence(): Promise<JobState[]> {
 }
 
 /** LIVE — GET /api/v1/overview/{dataset_id}. */
-export async function getOverview(datasetId: string): Promise<Sourced<OverviewResponse>> {
+export async function getOverview(
+  datasetId: string,
+  location?: string,
+): Promise<Sourced<OverviewResponse>> {
   await settle();
-  return fromBackend(() => backend.getOverview(datasetId), () => OVERVIEW);
+  return fromBackend(() => backend.getOverview(datasetId, location), () => OVERVIEW);
 }
 
 /**
