@@ -152,11 +152,16 @@ export interface KpiMetric {
 export interface SeriesPoint {
   /** ISO date at the detected frequency. */
   t: string;
+  /**
+   * The cleaned canonical `target`. There is exactly one observed series: the
+   * pipeline carries a single target column, and censoring produces a mask and
+   * a health-report flag, not a second de-censored series. A "demand vs
+   * recorded sales" comparison would therefore be the same line drawn twice.
+   */
   actual: number | null;
   forecast: number | null;
   lower: number | null;
   upper: number | null;
-  sales?: number | null;
 }
 
 export interface ForecastSeries {
@@ -273,13 +278,11 @@ export interface DemandResponse {
     products: FilterOption[];
     locations: FilterOption[];
     date_presets: FilterOption[];
-    comparisons: FilterOption[];
   };
   active_filters: {
     date_range: string;
     product: string;
     location: string;
-    compare: string;
   };
   horizon_label: string;
 }
@@ -507,4 +510,41 @@ export interface ScenarioOutcome {
   /** Backend-phrased observations. The frontend renders, never writes these. */
   notes: string[];
   capacity: { capped: boolean; deferred_items: number; unmet_units: number } | null;
+}
+
+/* -------------------------------------------------------------- parameters */
+
+/**
+ * Business parameters the decision engine needs but the forecast cannot supply.
+ *
+ * architecture.md is explicit that these are entered per category with bulk
+ * apply and overridable per SKU, and that a missing parameter is asked for
+ * rather than invented. `source` is what makes that visible: a planner can see
+ * at a glance which numbers came out of their own export and which are house
+ * defaults standing in until someone says otherwise.
+ *
+ * NEEDS-ENDPOINT: GET/PUT /api/v1/datasets/{id}/parameters
+ */
+export interface CategoryParameters {
+  category: string;
+  series_count: number;
+  lead_time_days: number;
+  service_level: number;
+  moq: number;
+  /** Read from the dataset's own columns, a house default, or set by a user. */
+  source: "dataset" | "default" | "user";
+  /** SKUs in this category carrying a per-SKU override. */
+  overrides: number;
+}
+
+export interface PlanningParameters {
+  dataset_id: string;
+  horizon_days: number;
+  /**
+   * Value simulation inputs. Null means nobody has supplied them, and the
+   * rupiah figures are withheld rather than guessed.
+   */
+  margin_percent: number | null;
+  holding_cost_percent: number | null;
+  categories: CategoryParameters[];
 }

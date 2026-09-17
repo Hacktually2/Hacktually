@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getDemand, getProject } from "@/app/dummy-data";
+import { getDemand, getProject, getSeriesDetail } from "@/app/dummy-data";
 import type { DemandResponse } from "@/app/dummy-data/types";
 import { BarList, DistributionBar } from "@/components/charts/bars";
 import { ForecastChart } from "@/components/charts/forecast-chart";
@@ -28,11 +28,19 @@ export default async function DemandPage({
     date_range: one(query.date_range),
     product: one(query.product),
     location: one(query.location),
-    compare: one(query.compare),
   });
 
   const active = demand.active_filters;
-  const showSales = active.compare === "sales";
+
+  // When the filters name one product at one location, the chart shows that
+  // series from GET /forecasts/{dataset}/{series} rather than the portfolio
+  // aggregate. Previously this case rendered the aggregate with an apology.
+  const seriesId =
+    active.product !== "all" && active.location !== "all"
+      ? `${active.product}__${active.location}`
+      : null;
+  const seriesDetail = seriesId ? await getSeriesDetail(project.dataset_id, seriesId) : null;
+  const chart = seriesDetail ?? demand.chart;
 
   const filterSpecs: FilterSpec[] = [
     {
@@ -55,13 +63,6 @@ export default async function DemandPage({
       options: demand.filters.locations,
       value: active.location,
       neutral: "all",
-    },
-    {
-      key: "compare",
-      label: "Compare",
-      options: demand.filters.comparisons,
-      value: active.compare,
-      neutral: "forecast",
     },
   ];
 
@@ -100,16 +101,17 @@ export default async function DemandPage({
       {/* Forecast result first, diagnostics after (design.md §43). */}
       <div className="mt-5 grid animate-enter-fade gap-5 [--enter-delay:140ms] xl:grid-cols-[1.45fr_1fr] xl:items-start">
         <Panel
-          title="Actual vs forecast demand"
-          description={`Weekly demand · ${scope}`}
+          title={seriesDetail ? "Actual vs forecast demand" : "Actual vs forecast demand"}
+          description={
+            seriesDetail ? `Weekly demand · ${seriesDetail.label}` : `Weekly demand · ${scope}`
+          }
         >
-          <ForecastChart series={demand.chart} height={340} showSales={showSales} />
-          {active.product !== "all" && (
+          <ForecastChart series={chart} height={340} />
+          {!seriesDetail && active.product !== "all" && (
             <p className="mt-4 flex items-start gap-2 rounded-sm border border-border-subtle bg-surface-sunken/60 px-3 py-2 text-meta text-ink-secondary">
               <Info size={14} className="mt-0.5 shrink-0 text-ink-tertiary" />
-              This chart shows aggregate demand. Per-series history and forecast come from
-              <code className="mx-1">GET /forecasts/{"{dataset}"}/{"{series}"}</code>, which is
-              not wired up in this build.
+              Showing the portfolio total. Choose a location as well to chart this product on
+              its own.
             </p>
           )}
         </Panel>

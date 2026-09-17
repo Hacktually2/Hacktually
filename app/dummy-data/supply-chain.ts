@@ -10,7 +10,7 @@ export const SUPPLY_CHAIN: SupplyChainResponse = {
   headline: {
     attention_count: 5,
     total_count: 18,
-    units_to_order: 17300,
+    units_to_order: 13500,
     detail:
       "Kacang Garuda 200g is the most urgent, with 7 days of cover against a 14-day lead time.",
   },

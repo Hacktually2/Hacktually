@@ -369,9 +369,9 @@ function Calendar() {
               Weekly demand, 18 months of history
             </p>
             <p className="mt-0.5 mb-4 text-meta text-ink-tertiary">
-              Two Lebaran peaks, then the post-holiday collapse.
+              Two Lebaran peaks, eleven days apart, then the post-holiday collapse.
             </p>
-            <ForecastChart series={DEMAND.chart} height={280} showSales interactive={false} />
+            <ForecastChart series={DEMAND.chart} height={280} interactive={false} />
           </div>
         </Reveal>
       </div>
@@ -383,11 +383,11 @@ function Calendar() {
 
 function Deployment() {
   const rows = [
-    ["Data residency", "Processed and stored in Indonesia, billed in Rupiah"],
+    ["Data residency", "Deploys to Indonesian cloud infrastructure, billed in Rupiah"],
     ["Ingestion", "CSV upload, JSON API, and ERP or POS connectors"],
     ["Access", "REST API, plus an MCP server for agent workflows"],
     ["Model layer", "Swappable behind one adapter interface"],
-    ["Isolation", "Per-tenant separation, with every mapping decision logged"],
+    ["Audit trail", "Every mapping decision and forecast run is recorded"],
   ];
 
   return (
@@ -433,7 +433,7 @@ function Deployment() {
  * ending without letting dark surfaces anywhere near the workspace.
  */
 const REASSURANCES = [
-  "Data processed and stored in Indonesia",
+  "Deploys to Indonesian cloud infrastructure",
   "Works from a CSV export",
   "Eighteen months of history is enough",
 ];

@@ -6,7 +6,7 @@ export const DEMAND: DemandResponse = {
   dataset_id: "ds_8f21c4",
   horizon_label: "17 Sep 2026 – 16 Oct 2026",
   chart: {
-    label: "Actual demand, sales and forecast",
+    label: "Actual vs forecast demand",
     cutoff_index: 80,
     points: DEMAND_WEEKLY,
     historical_range: { from: "2025-02-27", to: "2026-09-10" },
@@ -20,7 +20,7 @@ export const DEMAND: DemandResponse = {
     wape_percent: 11.4,
     bias_percent: 1.9,
     mase: 0.81,
-    baseline_name: "Seasonal naive",
+    baseline_name: "4-week moving average",
     baseline_wape_percent: 19.7,
     validation_windows: 2,
   },
@@ -106,18 +106,11 @@ export const DEMAND: DemandResponse = {
       { value: "6m", label: "Last 6 months" },
       { value: "90d", label: "Last 90 days" },
     ],
-    comparisons: [
-      { value: "forecast", label: "Forecast vs actual" },
-      { value: "sales", label: "Demand vs recorded sales" },
-      { value: "baseline", label: "Forecast vs seasonal naive" },
-      { value: "none", label: "No comparison" },
-    ],
   },
   active_filters: {
     date_range: "18m",
     product: "all",
     location: "all",
-    compare: "forecast",
   },
 };
 
@@ -147,7 +140,6 @@ export function buildDemandResponse(
     date_range: filters.date_range ?? DEMAND.active_filters.date_range,
     product: filters.product ?? DEMAND.active_filters.product,
     location: filters.location ?? DEMAND.active_filters.location,
-    compare: filters.compare ?? DEMAND.active_filters.compare,
   };
 
   // --- date range: slice the series the way a windowed query would ---------

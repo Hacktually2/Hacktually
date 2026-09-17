@@ -18,18 +18,15 @@ import { ChartHoverLayer } from "./chart-hover";
 export function ForecastChart({
   series,
   height = 300,
-  showSales = false,
   showBand = true,
   interactive = true,
 }: {
   series: ForecastSeries;
   height?: number;
-  showSales?: boolean;
   showBand?: boolean;
   interactive?: boolean;
 }) {
   const geo = projectSeries(series.points, series.cutoff_index, {
-    includeSales: showSales,
     xTickCount: 6,
     // Static charts skip building the hover columns entirely, so a non
     // interactive chart sends no per-point data to the client at all.
@@ -38,7 +35,7 @@ export function ForecastChart({
 
   return (
     <figure className="m-0">
-      <ChartLegend showSales={showSales} showBand={showBand} />
+      <ChartLegend showBand={showBand} />
 
       <div className="relative w-full" style={{ height }}>
         <div className="absolute top-2 right-2 bottom-7 left-14">
@@ -78,17 +75,6 @@ export function ForecastChart({
 
             {showBand && geo.bandPath && (
               <path d={geo.bandPath} fill="var(--color-series-band)" opacity={0.55} />
-            )}
-
-            {geo.salesPath && (
-              <path
-                d={geo.salesPath}
-                fill="none"
-                stroke="var(--color-series-sales)"
-                strokeWidth={1.5}
-                strokeOpacity={0.85}
-                vectorEffect="non-scaling-stroke"
-              />
             )}
 
             <path
@@ -178,12 +164,11 @@ export function ForecastChart({
   );
 }
 
-function ChartLegend({ showSales, showBand }: { showSales: boolean; showBand: boolean }) {
+function ChartLegend({ showBand }: { showBand: boolean }) {
   return (
     <ul className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-body-sm text-ink-secondary">
       <LegendItem color="var(--color-series-actual)" label="Actual demand" />
       <LegendItem color="var(--color-series-forecast)" label="Forecast" dashed />
-      {showSales && <LegendItem color="var(--color-series-sales)" label="Recorded sales" thin />}
       {showBand && (
         <li className="flex items-center gap-2">
           <span
