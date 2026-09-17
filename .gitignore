@@ -49,3 +49,12 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Backend
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+data/app.db*
+data/uploads/
+data/demo/
+.env

@@ -1,0 +1,10 @@
+# Pinned loosely on purpose: exact pins stalled resolution during setup.
+# Freeze with `pip freeze > requirements.lock.txt` once the environment works,
+# and do not upgrade anything on hackathon day.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.10
+polars>=1.17
+numpy>=2.0
+python-multipart>=0.0.20
+httpx>=0.28
