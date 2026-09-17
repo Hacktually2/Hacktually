@@ -261,17 +261,18 @@ def get_job(job_id: str):
 
 
 @router.get("/forecasts/{dataset_id}")
-def list_forecasts(dataset_id: str, limit: int = 100):
-    rows = db.query(
-        """SELECT s.series_id, s.item_id, s.location_id, s.demand_class, s.adi, s.cv2,
-                  m.model_name, m.wape, m.mase, m.bias, m.reason
-           FROM series_profiles s
-           LEFT JOIN model_selection m
-             ON m.dataset_id = s.dataset_id AND m.series_id = s.series_id
-           WHERE s.dataset_id = ? AND s.forecastable = 1
-           LIMIT ?""",
-        (dataset_id, limit),
-    )
+def list_forecasts(dataset_id: str, limit: int = 100, location: str | None = None):
+    sql = """SELECT s.series_id, s.item_id, s.location_id, s.demand_class, s.adi, s.cv2,
+                    m.model_name, m.wape, m.mase, m.bias, m.reason
+             FROM series_profiles s
+             LEFT JOIN model_selection m
+               ON m.dataset_id = s.dataset_id AND m.series_id = s.series_id
+             WHERE s.dataset_id = ? AND s.forecastable = 1"""
+    params: tuple = (dataset_id,)
+    if location:
+        sql += " AND s.location_id = ?"
+        params = (dataset_id, location)
+    rows = db.query(sql + " LIMIT ?", (*params, limit))
     return {
         "dataset_id": dataset_id,
         "model_mix": svc.model_mix(dataset_id),
@@ -349,10 +350,14 @@ def reset_notification_log(dataset_id: str, location_id: str | None = None):
 # ------------------------------------------------------------ dashboard tabs
 
 @router.get("/overview/{dataset_id}")
-def get_overview(dataset_id: str):
-    """KPI row, main chart, inventory posture, ranked actions."""
+def get_overview(dataset_id: str, location: str | None = None):
+    """KPI row, main chart, inventory posture, ranked actions.
+
+    `?location=` scopes the whole response to one branch. The caller decides who
+    may ask for which location; this service has no auth of its own.
+    """
     try:
-        return views.overview(dataset_id)
+        return views.overview(dataset_id, location)
     except KeyError:
         raise HTTPException(status_code=404, detail="dataset not found")
 
