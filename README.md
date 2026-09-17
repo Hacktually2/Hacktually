@@ -44,12 +44,15 @@ cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-DISABLE_TIMESFM=1 .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
 ```
 
-`DISABLE_TIMESFM=1` skips the foundation model. The pipeline still runs end to end on
-baselines plus the calendar wrapper, and `/health` reports what did not load. Leave it off
-only if you have a GPU endpoint configured — see [backend/README.md](backend/README.md).
+**No flag needed, and no GPU needed.** The foundation model (TimesFM) now runs on a remote
+inference service and switches itself off unless `GPU_INFERENCE_URL` and
+`GPU_INFERENCE_API_KEY` are set. Without them the pipeline still runs end to end on
+baselines plus the calendar wrapper, and `/health` reports exactly what did not load and
+why. Set them in `.env` to turn it on — the backend reads `backend/.env` then `<repo>/.env`,
+and real environment variables win over both.
 
 Check: <http://localhost:8000/health> · docs at <http://localhost:8000/docs>
 
@@ -136,9 +139,14 @@ npm run check:auth       # 31 assertions — passwords, access, branch splitting
 npm run check:fixtures   # 13 assertions — fixture invariants
 npm run lint
 npm run build
+
+# backend, with the service running on :8000
+backend/.venv/bin/python backend/scripts/check_contract.py   # 25 API invariants
 ```
 
-No test framework, deliberately: both are `assert`-based scripts that exit non-zero.
+No test framework, deliberately: all three are `assert`-based scripts that exit non-zero.
+`check_contract.py` is the one that matters most — it asserts the response contract the
+frontend renders, including that a branch-scoped request leaks no other branch.
 
 ## Optional
 
@@ -149,6 +157,7 @@ Everything below is off by default and nothing breaks without it.
 | `ANTHROPIC_API_KEY` | The **Ask the data** assistant. Without it the panel opens and says it is not configured. |
 | `SLACK_WEBHOOK_URL` | Actually sending the procurement alert. Without it the endpoint returns the message it would have sent, and the UI shows it. |
 | `AUTH_SECRET` | Signs session cookies. Generated on first run and stored in `data/auth.db` if unset. Set it in production. |
+| `GPU_INFERENCE_URL` + `GPU_INFERENCE_API_KEY` | The TimesFM foundation model, on a remote GPU. Without them the router drops it and uses baselines. |
 | `DEMO_LATENCY_MS` | Artificial latency, so loading skeletons are visible. |
 
 Copy [.env.example](.env.example) to `.env` for the full list.
@@ -201,8 +210,14 @@ duplicating them. The duplicates then break the TypeScript build with `Duplicate
 errors. Harmless to delete:
 
 ```bash
-find . -name "* [0-9].*" -not -path "./node_modules/*" -delete
+# Look first. This pattern can match real files — it has.
+find . -name "* [0-9].*" -not -path "./node_modules/*" -not -path "./.git/*"
+
+# Then remove the build cache, which is always safe to regenerate.
 rm -rf .next
 ```
+
+Delete the listed duplicates by hand, and check `git status` afterwards: anything tracked
+that went missing comes back with `git checkout -- <path>`.
 
 Moving the repo outside a synced folder avoids it entirely. Worth doing if you hit it twice.

@@ -97,8 +97,9 @@ check("the assistant's location scope follows branch access", () => {
   const budi = db.findUserByEmail("budi.santoso@gmail.com")!;
   const jakarta = db.listBranches(demo.project_id).find((b) => b.code === "CAB-JKT-01")!;
 
-  // Owner: every branch claiming the project.
-  assert.deepEqual(db.accessibleLocations(demoOwner.id, "prj-abc")?.sort(), ["CAB-JKT-01"]);
+  // The owner of the claiming project is unrestricted — null, not a list. A
+  // list would read as "restricted to these" and scope them to one branch.
+  assert.equal(db.accessibleLocations(demoOwner.id, "prj-abc"), null);
   // Manager with no grant: claimed, but nothing allowed. Empty, NOT null —
   // null would mean "unrestricted" and hand the assistant every branch.
   assert.deepEqual(db.accessibleLocations(budi.id, "prj-abc"), []);
@@ -119,6 +120,28 @@ check("both id forms of one forecasting project are guarded the same", () => {
     assert.deepEqual(db.accessibleLocations(budi.id, id), [], `${id} leaked`);
     assert.equal(db.visibleForecastProjects(budi.id, [id]).size, 0, `${id} visible`);
   }
+});
+
+check("a multi-branch manager is still scoped to one branch, never to all", () => {
+  // The leak this replaced: holding two of eight branches produced an unscoped
+  // request, so the response carried every branch and the owner's own totals.
+  // `accessibleLocations` must report exactly what is held; `branchScope` then
+  // picks one of them. Tested here at the data layer because branchScope needs
+  // a request context.
+  const rina = db.findUserByEmail("rina.pratiwi@gmail.com")!;
+  const branches = db.listBranches(demo.project_id);
+  const two = branches.slice(0, 2);
+  for (const branch of two) db.grantAccess(rina.id, branch.id, demoOwner.id);
+
+  const held = db.accessibleLocations(rina.id, "prj-abc") ?? [];
+  assert.deepEqual(held, ["CAB-JKT-01"], "only branches claiming prj-abc count");
+  assert.equal(db.accessibleLocations(demoOwner.id, "prj-abc"), null, "owner unrestricted");
+
+  // Holding some branches must never read as unrestricted. null is the value
+  // that means "may see everything", and it must not appear here.
+  assert.notEqual(db.accessibleLocations(rina.id, "prj-abc"), null);
+
+  for (const branch of two) db.revokeAccess(rina.id, branch.id);
 });
 
 check("a forecasting project no branch claims is unrestricted, not empty", () => {

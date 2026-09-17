@@ -5,10 +5,11 @@ import { ForecastChart } from "@/components/charts/forecast-chart";
 import { Reveal, RevealNoScriptFallback } from "@/components/marketing/reveal";
 import { SiteFooter, SiteHeader } from "@/components/marketing/site-chrome";
 import { ButtonLink } from "@/components/ui/button";
-import { ArrowRight, Check, Database, Layers, Shield } from "@/components/ui/icons";
+import { ArrowRight, Check, Database, Layers, Shield, Users } from "@/components/ui/icons";
 import { getSession } from "@/lib/session";
-import { formatByUnit, formatPercent } from "@/lib/format";
+import { formatByUnit, formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { DEMAND } from "./dummy-data/demand";
+import { HEALTH } from "./dummy-data/onboarding";
 import { OVERVIEW } from "./dummy-data/overview";
 
 export const metadata: Metadata = {
@@ -29,6 +30,7 @@ export default async function LandingPage() {
         <Proof />
         <Platform />
         <Workflow />
+        <Branches />
         <Calendar />
         <Deployment />
         <ClosingCta signedIn={Boolean(session)} />
@@ -99,14 +101,18 @@ function Hero({ signedIn }: { signedIn: boolean }) {
             of what to reorder.
           </p>
 
+{/* "Request a demo" used to sit here, pointing at the sign-in form. There
+              is no sales form behind it — the sign-in screen carries working
+              demo credentials, so it says what it actually does. The second
+              button no longer duplicates the first. */}
           <div className="mt-8 flex animate-enter flex-wrap items-center gap-3 [--enter-delay:430ms]">
             <ButtonLink href={signedIn ? "/projects" : "/login"} size="lg">
-              {signedIn ? "Go to workspace" : "Request a demo"}
+              {signedIn ? "Go to workspace" : "Open the live demo"}
               <ArrowRight size={18} />
             </ButtonLink>
             {!signedIn && (
-              <ButtonLink href="/login" variant="secondary" size="lg">
-                Sign in
+              <ButtonLink href="#platform" variant="secondary" size="lg">
+                See how it works
               </ButtonLink>
             )}
           </div>
@@ -130,8 +136,12 @@ function Hero({ signedIn }: { signedIn: boolean }) {
               <p className="text-body-sm font-semibold text-brand-deep">
                 Overview · PT ABC Distribution
               </p>
+              {/* Derived, not typed: a caption claiming a series count that
+                  the panel below it contradicts is the kind of detail a buyer
+                  notices. */}
               <p className="text-meta text-ink-tertiary">
-                Demonstration dataset · 428 series · last processed 17 Sep 2026
+                Demonstration dataset · {formatNumber(HEALTH.series_total)} series · last
+                processed {formatDateTime(OVERVIEW.generated_at)}
               </p>
             </div>
             <span className="hidden rounded-full border border-border-subtle px-2.5 py-1 text-meta text-ink-tertiary sm:inline">
@@ -186,7 +196,7 @@ function Proof() {
       detail: "Each one routes to a different set of models.",
     },
     {
-      value: "21",
+      value: String(Math.round(HEALTH.history_span_months)),
       label: "Months of history read",
       detail: "Covering two Lebaran peaks, eleven days apart.",
     },
@@ -322,6 +332,100 @@ function Workflow() {
   );
 }
 
+/* --------------------------------------------------------------- branches */
+
+/**
+ * Branch access.
+ *
+ * The page went a long time without mentioning this, which undersold it: a
+ * distributor with fifteen branches does not want fifteen logins to one
+ * spreadsheet, and "who may see which branch" is usually the question that
+ * decides whether a tool is allowed anywhere near real data.
+ *
+ * Every claim here is something the product does today, which is why it is
+ * worth saying plainly rather than in the future tense.
+ */
+function Branches() {
+  const roles = [
+    {
+      role: "Owner",
+      sees: "Every branch",
+      does: "Uploads the export, confirms what its columns mean, grants branches, answers requests.",
+    },
+    {
+      role: "Branch manager",
+      sees: "Only the branches granted to them",
+      does: "Reads their own demand and order list. Requests another branch from the project link.",
+    },
+  ];
+
+  return (
+    <section id="branches" className="layout-shell scroll-mt-20 py-20">
+      <Reveal>
+        <SectionHeading
+          eyebrow="Branch access"
+          title="One upload. Fifteen branches. Fifteen different views."
+          description="The file arrives whole and is split on the column you confirm is the branch. From then on the branch is the unit of access, not the file."
+        />
+      </Reveal>
+
+      <div className="mt-10 grid gap-5 lg:grid-cols-[1fr_1fr] lg:items-stretch">
+        <Reveal>
+          <div className="surface-card flex h-full flex-col overflow-hidden p-0">
+            <div className="grid gap-px bg-border-subtle sm:grid-cols-2">
+              {roles.map((r) => (
+                <div key={r.role} className="bg-surface-card px-5 py-4">
+                  <p className="flex items-center gap-1.5 text-body-sm font-semibold text-brand-deep">
+                    <Users size={15} className="text-brand-blue-ink" />
+                    {r.role}
+                  </p>
+                  <p className="mt-2 text-meta font-medium tracking-wide text-ink-tertiary uppercase">
+                    Sees
+                  </p>
+                  <p className="text-body-sm font-semibold text-ink">{r.sees}</p>
+                  <p className="mt-3 text-body-sm leading-relaxed text-ink-secondary">{r.does}</p>
+                </div>
+              ))}
+            </div>
+            <div className="border-t border-border-subtle px-5 py-4">
+              <p className="text-body-sm leading-relaxed text-ink-secondary">
+                A manager opens the project link, ticks the branches they run and says why. The
+                owner approves or declines each one. Approval takes effect on the next page
+                load — not at the next sign-in.
+              </p>
+            </div>
+          </div>
+        </Reveal>
+
+        <Reveal delay={120}>
+          <div className="surface-tinted flex h-full flex-col p-6">
+            <h3 className="text-section font-semibold text-brand-deep">
+              Scoped where it counts
+            </h3>
+            <p className="mt-2 text-body leading-relaxed text-ink-secondary">
+              A branch manager&rsquo;s dashboard is not the whole network with the other rows
+              hidden. The request is narrowed before it is answered, so the branches they do
+              not hold are never in the response at all.
+            </p>
+            <ul className="mt-5 space-y-3 border-t border-border-subtle pt-5">
+              {[
+                "Forecasts, KPIs and order lists are built per branch",
+                "A branch code they were not granted falls back — it never widens the view",
+                "Revoking a branch takes effect on the next request",
+              ].map((point) => (
+                <li key={point} className="flex gap-2.5 text-body-sm text-ink-secondary">
+                  <Check size={16} className="mt-0.5 shrink-0 text-brand-blue-ink" />
+                  {point}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
 /* --------------------------------------------------------------- calendar */
 
 function Calendar() {
@@ -384,7 +488,13 @@ function Calendar() {
 function Deployment() {
   const rows = [
     ["Data residency", "Deploys to Indonesian cloud infrastructure, billed in Rupiah"],
-    ["Ingestion", "CSV upload, JSON API, and ERP or POS connectors"],
+    // No connectors: architecture.md §"Not building" rules them out, and
+    // claiming them is the one thing on this page procurement would test.
+    [
+      "Ingestion",
+      "CSV upload or JSON API. Column presets recognise five Indonesian ERP exports without mapping.",
+    ],
+    ["Roles", "Owner holds the project; managers are granted named branches"],
     ["Access", "REST API, plus an MCP server for agent workflows"],
     ["Model layer", "Swappable behind one adapter interface"],
     ["Audit trail", "Every mapping decision and forecast run is recorded"],
@@ -476,7 +586,7 @@ function ClosingCta({ signedIn }: { signedIn: boolean }) {
                 variant="inverse"
                 size="lg"
               >
-                {signedIn ? "Go to workspace" : "Request a demo"}
+                {signedIn ? "Go to workspace" : "Open the live demo"}
                 <ArrowRight size={18} />
               </ButtonLink>
               <ButtonLink href="/#workflow" variant="inverseGhost" size="lg">

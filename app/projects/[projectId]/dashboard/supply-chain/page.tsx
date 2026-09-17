@@ -13,6 +13,8 @@ import { PlanningParametersButton } from "@/components/dashboard/planning-parame
 import { PostureStrip } from "@/components/dashboard/posture-strip";
 import { ProcurementAlert } from "@/components/dashboard/procurement-alert";
 import { ScenarioSimulator } from "@/components/dashboard/scenario-simulator";
+import { branchScope } from "@/auth/session";
+import { BranchPicker } from "@/components/dashboard/branch-picker";
 import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
@@ -31,6 +33,8 @@ export default async function SupplyChainPage({
 
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
+  const scope = await branchScope(projectId, one(query.branch));
+
   const [
     { data: supply, note: supplyNote },
     { data: value, note: valueNote },
@@ -43,7 +47,7 @@ export default async function SupplyChainPage({
         location: one(query.location),
         category: one(query.category),
       },
-      project.industry_mode
+      scope.location
     ),
     getValueSimulation(project.dataset_id),
     getPlanningParameters(project.dataset_id),
@@ -124,7 +128,13 @@ export default async function SupplyChainPage({
         />
       </div>
 
-      <div className="mt-5 animate-enter [--enter-delay:260ms]">
+      <div className="mt-5 flex animate-enter flex-wrap items-center gap-x-6 gap-y-3 [--enter-delay:260ms]">
+        <BranchPicker
+          base={`/projects/${projectId}/dashboard/supply-chain`}
+          options={scope.options}
+          active={scope.location}
+          search={query}
+        />
         <FilterBar filters={filterSpecs} />
       </div>
 
