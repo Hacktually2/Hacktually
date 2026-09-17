@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..canonical import BusinessParams, DecisionMode
+from . import economics
 
 # Service level -> z. Enough granularity for the levels anyone actually picks.
 Z_TABLE = {0.50: 0.00, 0.80: 0.84, 0.85: 1.04, 0.90: 1.28, 0.95: 1.65, 0.98: 2.05, 0.99: 2.33}
@@ -23,8 +24,13 @@ RISK_MEDIUM_DAYS = 21
 
 
 def z_for(service_level: float) -> float:
-    nearest = min(Z_TABLE, key=lambda s: abs(s - service_level))
-    return Z_TABLE[nearest]
+    """Exact normal quantile.
+
+    Used to snap to the nearest of a handful of table values starting at 50%, so
+    a 6% critical ratio for a perishable was silently stocked at 50%. Kept as a
+    name because other modules import it.
+    """
+    return economics.z_score(service_level)
 
 
 @dataclass
@@ -40,6 +46,7 @@ class Recommendation:
     explanation: list[dict] = field(default_factory=list)
     missing_params: list[str] = field(default_factory=list)
     raw_material_qty: float | None = None
+    service_level: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -56,6 +63,7 @@ class Recommendation:
             "raw_material_qty": (
                 round(self.raw_material_qty, 1) if self.raw_material_qty is not None else None
             ),
+            "service_level": self.service_level,
         }
 
 
@@ -91,6 +99,7 @@ def recommend(
     mode: DecisionMode = DecisionMode.RITEL,
     error_std: float | None = None,
     period_days: int = 1,
+    assumed: list[str] | None = None,
 ) -> Recommendation:
     forecast = np.asarray(forecast, dtype=float)
     missing: list[str] = []
@@ -110,7 +119,12 @@ def recommend(
         error_std = float(forecast.mean() * 0.5) if forecast.size else 0.0
         missing.append("backtest_error")
 
-    z = z_for(params.service_level)
+    # Service level is derived from what each mistake costs, not taken as a
+    # flat default. Below 50% the z-score goes negative and the buffer becomes
+    # a deliberate trim — ordering under expected demand because a leftover
+    # unit costs more than a missed sale.
+    level = economics.decide(params, assumed)
+    z = economics.z_score(level.level)
     safety_stock = float(z * error_std * np.sqrt(periods_in_lead_time))
 
     required = demand_over_lead_time + safety_stock
@@ -136,7 +150,11 @@ def recommend(
             "value": round(demand_over_lead_time, 1),
         },
         {
-            "label": f"Safety buffer at {int(params.service_level * 100)}% service level",
+            "label": (
+                f"Safety buffer at {level.level:.0%} service level"
+                if safety_stock >= 0
+                else f"Lean trim at {level.level:.0%} — overstock costs more"
+            ),
             "value": round(safety_stock, 1),
         },
         {"label": "Current stock", "value": -round(inventory, 1)},
@@ -162,6 +180,7 @@ def recommend(
         explanation=explanation,
         missing_params=missing,
         raw_material_qty=raw_material,
+        service_level=level.as_dict(),
     )
 
 

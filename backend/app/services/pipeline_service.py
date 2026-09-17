@@ -815,6 +815,7 @@ def build_recommendations(
             mode=mode,
             error_std=error_std.get(series_id),
             period_days=frequency.days,
+            assumed=assumed,
         )
         # Surface which numbers we were never given, rather than passing off a
         # built-in default as the customer's own figure.

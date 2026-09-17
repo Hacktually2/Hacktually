@@ -135,6 +135,8 @@ CREATE TABLE IF NOT EXISTS business_params (
     unit_margin       REAL,
     holding_cost_rate REAL,
     bom_factor        REAL,
+    cost_short        REAL,
+    cost_over         REAL,
     updated_at        TEXT,
     PRIMARY KEY (dataset_id, scope, scope_value)
 );
@@ -162,11 +164,21 @@ CREATE INDEX IF NOT EXISTS idx_recs_risk ON recommendations (dataset_id, stockou
 """
 
 
+MIGRATIONS = (
+    ("business_params", "cost_short", "REAL"),
+    ("business_params", "cost_over", "REAL"),
+)
+
+
 def init() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, column, kind in MIGRATIONS:
+            existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 
 @contextmanager

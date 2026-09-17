@@ -34,7 +34,7 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
         "qty", "quantity", "kuantitas", "jumlah", "demand", "sales", "sold",
         "terjual", "unitssold", "qtyout", "quantityout", "units", "penjualan",
         "movement", "keluar", "volume", "pemakaian", "konsumsi", "shipped",
-        "dikirim", "issued",
+        "dikirim", "issued", "saleamount", "salesqty", "soldqty",
     ),
     ITEM_ID: (
         "sku", "item", "product", "barang", "kodebrg", "kodebarang", "itemcode",
@@ -65,14 +65,33 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
 # Roles a column must not take even if the name looks right.
 NEGATIVE_HINTS: dict[str, tuple[str, ...]] = {
     TARGET: ("revenue", "omzet", "total", "amount", "nilai", "subtotal", "grandtotal"),
+    # A name containing "stock" is not always a stock level. FreshRetailNet's
+    # `stock_hour6_22_cnt` counts HOURS OUT OF STOCK, so zero means fully
+    # stocked — the exact inverse of what an inventory column means. Mapping it
+    # to inventory would make censoring detection fire backwards and silently
+    # flag every healthy day as a stockout.
+    INVENTORY: ("hour", "jam", "cnt", "count", "flag", "status", "duration"),
+}
+
+# Names that override a negative hint, because the quantity word is the stronger
+# signal. `sale_amount` contains "amount" but is a unit count, and losing it
+# means the dataset has no target at all.
+POSITIVE_OVERRIDES: dict[str, tuple[str, ...]] = {
+    TARGET: ("sale", "sold", "qty", "quantity", "unit", "terjual", "jual"),
 }
 
 
 def _name_score(column: str, canonical: str) -> tuple[float, str]:
     """Score a column name against a canonical role."""
     norm = normalize(column)
+    overrides = POSITIVE_OVERRIDES.get(canonical, ())
+    has_override = any(word in norm for word in overrides)
     for bad in NEGATIVE_HINTS.get(canonical, ()):
-        if bad in norm:
+        if bad in norm and not has_override:
+            if canonical == INVENTORY:
+                return 0.0, (
+                    f"'{column}' counts events or hours rather than a stock level"
+                )
             return 0.0, f"'{column}' looks like a monetary total, not {canonical}"
     best = 0.0
     reason = ""

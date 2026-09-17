@@ -70,3 +70,4 @@ data/exports/
 # and Bimbo's train.csv alone is 3.2 GB. See test2/ and real_dataset/ READMEs
 # for how to re-fetch.
 /test2/
+/test3/

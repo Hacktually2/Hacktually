@@ -133,6 +133,11 @@ class BusinessParams(BaseModel):
     unit_margin: float = 0.0
     holding_cost_rate: float = 0.02
     bom_factor: float = 1.0
+    # What one unit short and one unit over actually cost. Two numbers rather
+    # than a field per reason — spoilage, obsolescence and markdown all fold into
+    # cost_over. See decision/economics.py.
+    cost_short: float | None = None
+    cost_over: float | None = None
 
 
 class SeriesProfile(BaseModel):

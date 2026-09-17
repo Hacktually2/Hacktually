@@ -33,6 +33,8 @@ FIELDS = (
     "unit_margin",
     "holding_cost_rate",
     "bom_factor",
+    "cost_short",
+    "cost_over",
 )
 
 SCOPES = ("default", "category", "series")
@@ -136,6 +138,9 @@ def resolve(
     assumed = [f for f in FIELDS if f not in layered]
 
     values = {f: layered.get(f, getattr(builtin, f)) for f in FIELDS}
+    for optional in ("cost_short", "cost_over"):
+        if values.get(optional) is not None:
+            values[optional] = float(values[optional])
     if values["lead_time_days"] is not None:
         values["lead_time_days"] = int(values["lead_time_days"])
 
@@ -177,8 +182,11 @@ def suggest(dataset_id: str) -> dict:
     return {
         "dataset_id": dataset_id,
         "categories": categories,
-        "must_be_provided": ["lead_time_days", "moq", "service_level"],
+        "must_be_provided": ["lead_time_days", "moq"],
         "can_be_estimated": ["unit_cost", "unit_margin"],
+        # Service level is no longer asked for directly. Supply what each kind of
+        # mistake costs and it is derived; set it explicitly only to override.
+        "derives_service_level": ["cost_short", "cost_over"],
         "note": (
             "Lead time, MOQ and service level are commercial terms — they are not "
             "in a sales export and we do not guess them. Set them per category; "
