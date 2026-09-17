@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { getProject, getProjects } from "@/app/dummy-data";
 import { ProjectBar } from "@/components/app-shell/project-bar";
-import { visibleForecastProjects } from "@/auth/db";
+import { ownsDemoNetwork, visibleForecastProjects } from "@/auth/db";
 import { requireForecastAccess } from "@/auth/session";
 
 /**
@@ -20,7 +20,7 @@ export default async function DashboardLayout({
   const user = await requireForecastAccess(projectId);
   const [project, { data: projects }] = await Promise.all([
     getProject(projectId),
-    getProjects(),
+    getProjects({ demoFixtures: ownsDemoNetwork(user.id) }),
   ]);
   if (!project) notFound();
 

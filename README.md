@@ -44,12 +44,15 @@ cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-DISABLE_TIMESFM=1 .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
 ```
 
-`DISABLE_TIMESFM=1` skips the foundation model. The pipeline still runs end to end on
-baselines plus the calendar wrapper, and `/health` reports what did not load. Leave it off
-only if you have a GPU endpoint configured — see [backend/README.md](backend/README.md).
+**No flag needed, and no GPU needed.** The foundation model (TimesFM) now runs on a remote
+inference service and switches itself off unless `GPU_INFERENCE_URL` and
+`GPU_INFERENCE_API_KEY` are set. Without them the pipeline still runs end to end on
+baselines plus the calendar wrapper, and `/health` reports exactly what did not load and
+why. Set them in `.env` to turn it on — the backend reads `backend/.env` then `<repo>/.env`,
+and real environment variables win over both.
 
 Check: <http://localhost:8000/health> · docs at <http://localhost:8000/docs>
 
@@ -104,6 +107,58 @@ report carries a warning — so leave it off anywhere a number might be quoted.
 
 ---
 
+## Buying it (the logged-out flow)
+
+`/#pricing` → **Choose Jaringan** → `/checkout?plan=jaringan` → **Continue** → `/signup` →
+you are an owner, signed in, on `/projects`.
+
+| Plan | Price | Branches |
+| --- | --- | --- |
+| Cabang | Rp 9.000.000 / month | 1 |
+| Jaringan | Rp 18.000.000 / month | up to 10 |
+| Nasional | Rp 40.000.000 / month | up to 40 |
+| Korporat | Custom, annual | unlimited, own tenancy |
+
+`Korporat` is contact-only and has no checkout link — `/checkout?plan=korporat` is a 404,
+asserted in `check:auth`.
+
+**No payment is taken and no card is collected.** There is no processor wired up and no card
+field anywhere in the flow — the checkout page says so on the screen where it happens. When
+Midtrans or Xendit is added, its webhook replaces `completeCheckout` and nothing else in the
+flow changes.
+
+Two things worth knowing about the MVP shortcuts:
+
+- **No email confirmation.** The address is taken on trust, so a typo locks someone out of
+  their own project and a deliberate misspelling squats someone else's address. Wire a
+  confirmation link before real customers.
+- **Sign-up is gated, not open.** It creates an **owner**, so checkout issues a short-lived
+  signed pass and `/signup` refuses without one — otherwise the URL alone would grant the
+  role that decides who sees which branch. `npm run check:auth` asserts that forged,
+  stripped, expired and contact-only-plan passes are all refused.
+
+## Adding managers without selling them a plan
+
+An owner generates a **company token** on **Team & access**, sends the join link, and the
+manager creates their own account with it:
+
+```
+/join-company?token=…  →  manager account in the owner's company  →  /projects
+```
+
+What the token does and does not do:
+
+| | |
+| --- | --- |
+| Creates | A **manager** account, in the owner's company. The role is not a form field — a token can never mint an owner, so it is not a way to skip checkout. |
+| Grants | Company membership only. The new manager sees the owner's project *names*, so they know which branches to ask for. Not one row of data. |
+| Expires | 14 days. A token forgotten in a WhatsApp thread stops working. |
+| Rotates | **Replace** writes a new token over the old row — that is the revocation, with no second list to keep in step. **Turn off** deletes it entirely. |
+| Keeps | Managers who already joined keep their accounts and their branches when you rotate. |
+
+An invalid token and an expired one give the same message, so the page cannot be used to
+test whether a token was ever real.
+
 ## Signing in
 
 Three accounts are seeded on first run and listed on the sign-in screen, with a button that
@@ -128,19 +183,35 @@ fills them in:
    Confirm → cleaning and profiling run, then a forecast job is queued and the processing
    screen follows it live.
 4. **Dashboard.** Overview, Demand & Sales, Supply Chain — all from the live service.
-5. **Branch network** (from the projects list, under the project card). Every branch as a
-   node around one centre: node area is how much catalogue it carries, colour is how much
-   of that catalogue needs ordering attention. Hover or tab to a node for its numbers and
-   a link into that branch. Use `penjualan_jaringan.csv` for this screen — the other file
-   is not shaped to make the colours differ.
-6. **Team & access →** copy the project link, or register `budi.santoso@gmail.com` against
-   one branch. A new account's password is shown once, on your screen.
+5. **Branch network** — the `Branch network` button on the project card. Every branch is
+   plotted by how much of its catalogue needs ordering attention (right) against how much
+   catalogue it carries (up), with bubble area as share of network demand. The quadrant
+   divider sits on the measured network average, so "above average" is a fact about that
+   company rather than a threshold we picked. Hover or tab to a bubble for its numbers and
+   a link into that branch.
+
+   The card also carries the whole-network forecast, and `Merged dashboard` opens every
+   branch at once. That total is the sum of the branch forecasts — the rollup is bottom-up,
+   and `/datasets/{id}/hierarchy` reports the gap so the claim can be checked.
+
+   Use `penjualan_jaringan.csv` for this screen. The other file is not shaped to make the
+   branch colours differ.
+6. **Team & access →** copy the **project link** (`/projects/<id>/team`) and send it to a
+   manager, or register `budi.santoso@gmail.com` against one branch directly. A new
+   account's password is shown once, on your screen.
+
+   The project link works for any signed-in account. A manager who holds nothing there sees
+   the branch list and a request form; they do **not** see the dashboard, the invite token,
+   the manager roster, agent access, or a single row of data.
 7. Sign in as **Budi** in another browser profile. He sees only his branch; typing another
-   branch's URL gives a 404. Open the project link to request more, then approve it as
-   Sari. Two more things differ for him: the branch network shows **only his branch and no
+   branch's URL gives a 404. Open the project link to request more, then approve it as Sari.
+
+   Two more things differ for him. The branch network shows **only his branch and no
    network average**, and the **What if?** panel on Supply Chain is replaced by an
-   explanation — scenario levers are network-wide commercial terms, so they are the
-   owner's. The server action refuses him even by direct POST.
+   explanation: the levers there are supplier lead time, service level, MOQ and order
+   capacity, which are network-wide commercial terms rather than a branch's operating
+   choices. The server action refuses him even by direct POST, so hiding the panel is
+   presentation and the check is the control.
 
 There is also a seeded demo network (`PT ABC Distribution`, three branches wired to the
 fixture dashboards) so the access flow is demoable with the backend switched off.
@@ -175,9 +246,14 @@ npm run check:auth       # 31 assertions — passwords, access, branch splitting
 npm run check:fixtures   # 13 assertions — fixture invariants
 npm run lint
 npm run build
+
+# backend, with the service running on :8000
+backend/.venv/bin/python backend/scripts/check_contract.py   # 25 API invariants
 ```
 
-No test framework, deliberately: both are `assert`-based scripts that exit non-zero.
+No test framework, deliberately: all three are `assert`-based scripts that exit non-zero.
+`check_contract.py` is the one that matters most — it asserts the response contract the
+frontend renders, including that a branch-scoped request leaks no other branch.
 
 ## Optional
 
@@ -188,6 +264,7 @@ Everything below is off by default and nothing breaks without it.
 | `ANTHROPIC_API_KEY` | The **Ask the data** assistant. Without it the panel opens and says it is not configured. |
 | `SLACK_WEBHOOK_URL` | Actually sending the procurement alert. Without it the endpoint returns the message it would have sent, and the UI shows it. |
 | `AUTH_SECRET` | Signs session cookies. Generated on first run and stored in `data/auth.db` if unset. Set it in production. |
+| `GPU_INFERENCE_URL` + `GPU_INFERENCE_API_KEY` | The TimesFM foundation model, on a remote GPU. Without them the router drops it and uses baselines. |
 | `DEMO_LATENCY_MS` | Artificial latency, so loading skeletons are visible. |
 
 Copy [.env.example](.env.example) to `.env` for the full list.
@@ -222,7 +299,10 @@ which, and what is still missing.
 rm -f data/auth.db* data/app.db*
 ```
 
-Accounts and the demo network reseed on the next request.
+The demo accounts and the PT ABC network **reseed on the next request** — deleting the file
+is not enough to get an empty instance. To keep it empty, set `AUTH_SKIP_SEED=1` in `.env`
+before the next request. With it set, the sign-in screen stops advertising demo credentials
+too, so it never offers a login that would be refused.
 
 **Port already in use.** A previous `next dev` or `uvicorn` is still running:
 
@@ -240,8 +320,14 @@ duplicating them. The duplicates then break the TypeScript build with `Duplicate
 errors. Harmless to delete:
 
 ```bash
-find . -name "* [0-9].*" -not -path "./node_modules/*" -delete
+# Look first. This pattern can match real files — it has.
+find . -name "* [0-9].*" -not -path "./node_modules/*" -not -path "./.git/*"
+
+# Then remove the build cache, which is always safe to regenerate.
 rm -rf .next
 ```
+
+Delete the listed duplicates by hand, and check `git status` afterwards: anything tracked
+that went missing comes back with `git checkout -- <path>`.
 
 Moving the repo outside a synced folder avoids it entirely. Worth doing if you hit it twice.

@@ -12,8 +12,18 @@ import { Check } from "@/components/ui/icons";
  * production without an env var — and without an effect that would rewrite the
  * markup after paint.
  */
-export function CopyLink({ token }: { token: string }) {
-  const path = `/join/${token}`;
+export function CopyLink({
+  token,
+  projectId,
+}: {
+  token: string;
+  projectId: string;
+}) {
+  // Two links that do the same job. The project URL is the one to hand out —
+  // it is readable and it is the page they will end up on anyway. The token
+  // link stays because it is already in circulation and still works.
+  const [which, setWhich] = useState<"project" | "token">("project");
+  const path = which === "project" ? `/projects/${projectId}/team` : `/join/${token}`;
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -24,6 +34,31 @@ export function CopyLink({ token }: { token: string }) {
 
   return (
     <div>
+      <div className="mb-2 flex gap-1" role="group" aria-label="Which link to copy">
+        {(
+          [
+            ["project", "Project link"],
+            ["token", "Invite token"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => {
+              setWhich(key);
+              setCopied(false);
+            }}
+            aria-pressed={which === key}
+            className={`rounded-sm border px-2.5 py-1 text-meta font-semibold transition-colors duration-(--duration-fast) ${
+              which === key
+                ? "border-brand-blue bg-brand-pale text-brand-deep"
+                : "border-border-subtle text-ink-secondary hover:text-brand-deep"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <p className="truncate rounded-sm border border-border-subtle bg-surface-sunken/60 px-3 py-2 font-mono text-body-sm text-ink-secondary">
         {path}
       </p>

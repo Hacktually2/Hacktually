@@ -7,6 +7,8 @@ import { ForecastChart } from "@/components/charts/forecast-chart";
 import { FilterBar, type FilterSpec } from "@/components/dashboard/filter-bar";
 import { ForecastTable } from "@/components/dashboard/forecast-table";
 import { Info } from "@/components/ui/icons";
+import { branchScope } from "@/auth/session";
+import { BranchPicker } from "@/components/dashboard/branch-picker";
 import { DataSource } from "@/components/ui/data-source";
 import { Field, PageHeader, Panel } from "@/components/ui/panel";
 import { DEMAND_COLOR } from "@/components/ui/status";
@@ -24,12 +26,22 @@ export default async function DemandPage({
 
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
+  // Scope first: a restricted user's request is always narrowed to one branch
+  // before it leaves, so the other branches are never in the response.
+  const branch = await branchScope(projectId, one(query.branch));
+
   // Filters go to the data layer, not into the components.
-  const { data: demand, note: demandNote } = await getDemand(project.dataset_id, {
-    date_range: one(query.date_range),
-    product: one(query.product),
-    location: one(query.location),
-  });
+  const { data: demand, note: demandNote } = await getDemand(
+    project.dataset_id,
+    {
+      date_range: one(query.date_range),
+      product: one(query.product),
+      // The access scope wins over the filter bar: a manager cannot widen their
+      // own view by editing the query string.
+      location: branch.location ?? one(query.location),
+    },
+    branch.locations
+  );
 
   const active = demand.active_filters;
 
@@ -94,6 +106,12 @@ export default async function DemandPage({
               {project.organisation} · {project.name} · Forecast horizon {demand.horizon_label}
             </>
           }
+        />
+        <BranchPicker
+          base={`/projects/${projectId}/dashboard/demand`}
+          options={branch.options}
+          active={branch.location}
+          search={query}
         />
         <DataSource note={demandNote} className="mt-4 max-w-2xl" />
       </div>

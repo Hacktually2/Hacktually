@@ -29,10 +29,25 @@ export interface ToolContext {
   locations: string[] | null;
 }
 
-function inScope(rows: InventoryRow[], locations: string[] | null) {
-  if (locations === null) return rows;
-  const allowed = new Set(locations);
-  return rows.filter((row) => allowed.has(row.location_id));
+/**
+ * Recommendations the caller is entitled to, fetched scoped rather than
+ * filtered.
+ *
+ * Unrestricted asks once with no location. Otherwise it asks once per branch
+ * the person holds and concatenates the rows — a union of rows the service
+ * already returned, not a number recomputed here — so the model is never handed
+ * another branch's data to quote back.
+ */
+async function scopedRows(context: ToolContext): Promise<InventoryRow[]> {
+  if (context.locations === null) {
+    return (await backend.getRecommendations(context.datasetId)).rows;
+  }
+  const perBranch = await Promise.all(
+    context.locations.map((location) =>
+      backend.getRecommendations(context.datasetId, { location }),
+    ),
+  );
+  return perBranch.flatMap((response) => response.rows);
 }
 
 export const TOOL_DEFINITIONS = [
@@ -125,8 +140,7 @@ export async function runTool(
     switch (name) {
       case "get_stockout_risk": {
         const limit = Math.min(Number(input.top_n) || 10, MAX_ROWS);
-        const response = await backend.getRecommendations(context.datasetId, 500);
-        let rows = inScope(response.rows, context.locations);
+        let rows = await scopedRows(context);
         if (typeof input.location === "string" && input.location) {
           rows = rows.filter((row) => row.location_id === input.location);
         }
@@ -141,8 +155,6 @@ export async function runTool(
             context.locations === null
               ? "all locations"
               : `locations you can access: ${context.locations.join(", ")}`,
-          // The headline is the backend's own phrasing of what needs attention.
-          headline: response.headline.detail,
           items: ranked.map((row) => ({
             series_id: row.series_id,
             item: row.item_name,
@@ -158,8 +170,7 @@ export async function runTool(
 
       case "get_reorder_recommendation": {
         const seriesId = String(input.series_id ?? "");
-        const response = await backend.getRecommendations(context.datasetId, 500);
-        const row = inScope(response.rows, context.locations).find(
+        const row = (await scopedRows(context)).find(
           (entry) => entry.series_id === seriesId,
         );
         if (!row) return `No recommendation for ${seriesId} in the data you can see.`;

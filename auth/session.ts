@@ -18,7 +18,9 @@ import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 import { timingSafeEqual } from "node:crypto";
 import {
+  accessibleLocations,
   findBranchByForecastProject,
+  uploaderOf,
   getProject,
   getUser,
   hasBranchAccess,
@@ -96,6 +98,55 @@ export async function requireSession(): Promise<AuthUser> {
 }
 
 /**
+ * A project any signed-in person may look at, and what they may do with it.
+ *
+ * Deliberately softer than `requireProjectAccess`: a manager who holds nothing
+ * in this project still gets here, because the project id IS the shareable
+ * link — that is how someone finds the branches they run and asks for them.
+ * Refusing them would mean every request has to start with the owner sending a
+ * secret token, which is a worse product and not actually more secure: the
+ * invite link already hands out the same information.
+ *
+ * What an outsider gets is the branch LIST — names and sizes — and nothing
+ * else. No forecasts, no recommendations, no rows. Those still go through
+ * `requireForecastAccess`, and the team screen renders a request form rather
+ * than the owner's management surface.
+ *
+ * Project ids are 12 random hex characters, so this is not an enumerable
+ * directory of every company on the service.
+ */
+export async function projectAccessFor(projectId: string): Promise<{
+  user: AuthUser;
+  project: Project;
+  /** Branches this person holds. Empty for an outsider. */
+  branches: Branch[];
+  /** Every branch in the project — the list an outsider may request from. */
+  allBranches: Branch[];
+  isOwner: boolean;
+  /** True when they already hold at least one branch here. */
+  isMember: boolean;
+}> {
+  const user = await requireSession();
+  const project = getProject(projectId);
+  if (!project) notFound();
+
+  const allBranches = listBranches(project.project_id);
+  if (project.owner_id === user.id) {
+    return { user, project, branches: allBranches, allBranches, isOwner: true, isMember: true };
+  }
+
+  const branches = listAccessibleBranches(user.id, project.project_id);
+  return {
+    user,
+    project,
+    branches,
+    allBranches,
+    isOwner: false,
+    isMember: branches.length > 0,
+  };
+}
+
+/**
  * A project the caller is entitled to open, with the branches they may work on.
  *
  * Owners get their own projects and every branch in them. Managers get the
@@ -135,15 +186,25 @@ export async function requireProjectAccess(projectId: string): Promise<{
  * or access. This is the join between the two: if some branch has staked a
  * claim on that project, only that branch's people may open it.
  *
- * A project no branch claims is left alone. That is on purpose: a dataset
- * pushed straight into forecasting is not governed by this layer, and refusing
- * it here would mean the auth service silently owns things it was never told
- * about. Signed-in is the floor; the layout above already enforces that.
+ * **Default deny.** This used to let any signed-in user open a project no
+ * branch claimed, reasoning that a dataset pushed straight into the forecasting
+ * service was not this layer's to govern. It failed open: abandoned uploads —
+ * real rows, real quantities, every branch — were readable by every account.
+ *
+ * An unclaimed dataset now belongs to whoever uploaded it through this app,
+ * which covers the window between uploading a file and answering the column
+ * questions. A dataset this layer has never seen belongs to nobody and is
+ * refused, because a 404 is the right answer to "is this mine?" when we have no
+ * reason to think it is.
  */
 export async function requireForecastAccess(forecastProjectId: string): Promise<AuthUser> {
   const user = await requireSession();
   const branch = findBranchByForecastProject(forecastProjectId);
-  if (!branch) return user;
+
+  if (!branch) {
+    if (uploaderOf(forecastProjectId) !== user.id) notFound();
+    return user;
+  }
 
   const project = getProject(branch.project_id);
   if (project?.owner_id === user.id) return user;
@@ -159,17 +220,21 @@ export async function requireForecastAccess(forecastProjectId: string): Promise<
  * the section absent, not find the whole page gone — hiding is the right
  * failure here, and `requireForecastOwner` below is what actually refuses.
  *
- * An unclaimed dataset answers true. That is the same rule
- * `requireForecastAccess` already applies: nothing in this layer governs a
- * dataset pushed straight into forecasting, so there is no owner to compare
- * against and signed-in remains the floor. It grants nothing new, because a
- * caller who reaches an unclaimed dataset can already read all of it.
+ * An unclaimed dataset answers true only for whoever uploaded it, which mirrors
+ * the default-deny rule in `requireForecastAccess`. An earlier version of this
+ * returned true for any signed-in user on an unclaimed dataset, reasoning that
+ * they could already read all of it anyway. That reasoning stopped being true
+ * the moment `requireForecastAccess` closed that hole, and this function is
+ * reachable from a Server Action without the page — so it must never be more
+ * permissive than the read check guarding the same data.
  */
 export async function isForecastOwner(forecastProjectId: string): Promise<boolean> {
   const user = await getSession();
   if (!user) return false;
+
   const branch = findBranchByForecastProject(forecastProjectId);
-  if (!branch) return true;
+  if (!branch) return uploaderOf(forecastProjectId) === user.id;
+
   return getProject(branch.project_id)?.owner_id === user.id;
 }
 
@@ -185,6 +250,78 @@ export async function requireForecastOwner(forecastProjectId: string): Promise<A
   const user = await requireSession();
   if (!(await isForecastOwner(forecastProjectId))) notFound();
   return user;
+}
+
+export interface BranchScope {
+  /**
+   * The branch this request is scoped to, or null for the whole network.
+   *
+   * Null is only ever returned to someone entitled to everything. A restricted
+   * user always gets a concrete branch — there is no path where "I hold some
+   * branches" becomes "show me all of them".
+   */
+  location: string | null;
+  /** Every location this user may see, or null for unrestricted. */
+  locations: string[] | null;
+  /** Branches to offer in the picker. Empty when there is nothing to choose. */
+  options: string[];
+  /** True when this user cannot see the whole network. */
+  restricted: boolean;
+}
+
+/** A code that matches nothing, so a bad scope returns no rows rather than all. */
+const NO_BRANCH = "__none__";
+
+/**
+ * Which branch a dashboard request is scoped to.
+ *
+ * The forecasting service takes one `?location=` per call. A manager holding
+ * several branches therefore has to look at one at a time, and `requested` is
+ * which — it comes from the URL, so it is untrusted and checked against what
+ * they actually hold.
+ *
+ * The rule that matters: **a restricted user never gets an unscoped request.**
+ * An earlier version returned null for a multi-branch manager and showed a note
+ * explaining why the whole network was on screen. A note beside leaked data is
+ * not a control: their overview carried every branch's KPIs and the owner's
+ * exact totals. Now an unrecognised or unauthorised `requested` falls back to
+ * the first branch they hold, and holding none scopes to a code that matches
+ * nothing.
+ */
+export async function branchScope(
+  forecastProjectId: string,
+  requested?: string | null,
+): Promise<BranchScope> {
+  const user = await requireSession();
+  const locations = accessibleLocations(user.id, forecastProjectId);
+
+  // Unrestricted: the whole network by default, one branch if they asked for
+  // one. An owner focusing a single branch is a feature, not a restriction.
+  if (locations === null) {
+    return {
+      location: requested || null,
+      locations: null,
+      options: [],
+      restricted: false,
+    };
+  }
+
+  if (locations.length === 0) {
+    return { location: NO_BRANCH, locations, options: [], restricted: true };
+  }
+
+  // Untrusted input: only a branch they hold is honoured. Anything else — a
+  // typo, another branch's code, a revoked grant — falls back rather than
+  // widening.
+  const location =
+    requested && locations.includes(requested) ? requested : locations[0];
+
+  return {
+    location,
+    locations,
+    options: locations.length > 1 ? locations : [],
+    restricted: true,
+  };
 }
 
 /** For the owner-only surfaces: inviting managers, deciding requests. */

@@ -7,6 +7,8 @@ import type { InventoryPosture, PriorityAction } from "@/app/dummy-data/types";
 import { ForecastChart } from "@/components/charts/forecast-chart";
 import { KpiCard } from "@/components/dashboard/kpi-card";
 import { ArrowRight } from "@/components/ui/icons";
+import { branchScope } from "@/auth/session";
+import { BranchPicker } from "@/components/dashboard/branch-picker";
 import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { RiskBadge } from "@/components/ui/status";
@@ -33,13 +35,19 @@ function greeting(): string {
 
 export default async function OverviewPage({
   params,
+  searchParams,
 }: PageProps<"/projects/[projectId]/dashboard">) {
-  const { projectId } = await params;
+  const [{ projectId }, query] = await Promise.all([params, searchParams]);
   const project = await getProject(projectId);
   if (!project) notFound();
 
+  // Scope the request, do not filter the response: a branch manager's overview
+  // is built by the service from their branch alone, so the rest of the network
+  // is never serialised into the payload.
+  const requested = Array.isArray(query.branch) ? query.branch[0] : query.branch;
+  const scope = await branchScope(projectId, requested);
   const [{ data: overview, note: overviewNote }, session] = await Promise.all([
-    getOverview(project.dataset_id),
+    getOverview(project.dataset_id, scope.location),
     getSession(),
   ]);
 
@@ -50,6 +58,12 @@ export default async function OverviewPage({
           title={`${greeting()}${session ? `, ${session.name.split(" ")[0]}` : ""}`}
           description={`Here is the current demand and inventory outlook for ${project.organisation}.`}
           context={<>Last processed {formatDateTime(overview.generated_at)}</>}
+        />
+        <BranchPicker
+          base={`/projects/${projectId}/dashboard`}
+          options={scope.options}
+          active={scope.location}
+          search={query}
         />
         <DataSource note={overviewNote} className="mt-4 max-w-2xl" />
       </div>
@@ -202,7 +216,17 @@ function PriorityPanel({
         {actions.map((action) => (
           <li key={action.series_id}>
             <Link
-              href={action.href}
+              // The service sends no href (gap B16). Rather than a dead row in
+              // a list whose whole purpose is being acted on, fall back to the
+              // tab that can act on it — `?series=` is what the inventory
+              // workspace reads to select a row and open its reasoning. Routing
+              // is the frontend's to decide; the ranking above it is not.
+              href={
+                action.href ??
+                `/projects/${projectId}/dashboard/supply-chain?series=${encodeURIComponent(
+                  action.series_id
+                )}`
+              }
               className="group flex items-start gap-4 px-5 py-4 transition-colors duration-(--duration-fast) hover:bg-brand-pale-soft"
             >
               <span

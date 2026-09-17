@@ -157,6 +157,14 @@ gap paling penting di daftar bagian 5.
 (53,4%), timesfm (37,9%), timesfm+calendar (8,7%) — baseline tidak menang sama
 sekali. Hati-hati memakai ini: kedengarannya hebat, tapi lihat bagian berikut.
 
+> **DIBATALKAN — jangan pakai angka 100% ini.** Kemenangan 100% itu artefak dari
+> metrik seleksi, bukan keunggulan model. MASE memberi nilai bagus ke forecast
+> yang mendekati nol, dan 43% series intermittent memang mendapat forecast
+> seperti itu. Setelah metriknya diperbaiki, foundation model menang di **88 dari
+> 599 series (15%)** dan sisanya moving average. Angka yang benar dan alasan
+> lengkapnya ada di **bagian 9**. Tabel segmen di atas tetap sah — itu skor
+> head-to-head per model, bukan hasil seleksi.
+
 ### Yang paling penting, dan paling tidak enak
 
 Selisih antara model **terbaik yang tersedia** dan model **yang benar-benar kita
@@ -297,8 +305,21 @@ musiman.
 output. Padahal di ritel item baru justru yang paling butuh dan paling sering
 salah pesan.
 
-**7. Belum ada audit log, enkripsi at-rest, dan rate limiting.** Sudah tercatat
-di `backend-handoff.md` §8. Jangan diklaim.
+**7. Belum ada audit log, enkripsi at-rest, dan rate limiting.** Jangan diklaim.
+
+**8. Band risiko `watch` tidak pernah muncul di setelan default.**
+`classify_risk` memberi `watch` kalau coverage di bawah `2 × lead_time` **dan**
+stok tidak habis di dalam horizon. Dengan default `lead_time_days = 14` dan
+horizon 30 hari: butuh coverage di atas 30 tapi di bawah 28. Mustahil.
+
+Jadi kosakata risiko punya empat band dan hanya tiga yang bisa terjadi. Bukan
+bug — 14 hari itu asumsi bisnis, dan mengubahnya menggeser setiap rekomendasi —
+tapi berarti UI punya state yang belum pernah terpakai. Set `lead_time_days` ke
+21 atau lebih lewat `PUT /datasets/{id}/params` kalau keempatnya perlu terlihat.
+
+**9. Foundation model meramal mendekati nol untuk demand sparse, dan MASE
+memberinya nilai bagus.** Ini yang paling mahal di daftar ini dan sudah
+diperbaiki sebagian — lihat bagian 9 di bawah.
 
 ---
 
@@ -462,3 +483,95 @@ Kalau cuma bisa mengingat tiga hal dari dokumen ini:
 3. **Per-series selection belum pernah aktif di data nyata** — 599 dari 599
    series memakai segment default, dan harganya 17 poin persen di intermittent.
    Sebut ini sebelum juri menemukannya.
+
+---
+
+## 9. Metrik seleksi untuk demand sparse — diukur dan diperbaiki
+
+Ditemukan setelah bagian 3 ditulis, dan ini mengubah salah satu angka di sana.
+
+### Gejalanya
+
+Untuk series intermittent, titik forecast foundation model runtuh mendekati nol.
+Contoh nyata dari data demo: satu item dengan rata-rata 30 hari terakhir **55,8
+unit/hari** diramal **0,14 unit/hari**. Rantai akibatnya:
+
+```
+forecast ≈ 0  →  stok tidak pernah habis  →  days_until_stockout = None
+              →  risk = healthy           →  recommended_qty = 0
+```
+
+Sistem bilang "aman, tidak perlu pesan" untuk barang yang pasti kehabisan.
+
+Ini **bukan bug di kode kita.** Service mengembalikan `forecast` dan
+`quantiles`, dan kita memakai `forecast` — titik milik model itu sendiri. Untuk
+demand yang 84% nol, titik yang meminimalkan error memang mendekati median,
+yaitu nol.
+
+### Kenapa backtest tidak menangkapnya
+
+Kita menilai intermittent dengan MASE, dan **meramal nol untuk series yang 84%
+nol memberi MASE bagus** — error absolut per-hari memang kecil. Padahal
+keputusan stok tidak peduli hari mana barang laku; dia cuma peduli **total
+selama lead time**. Jadi metrik yang memilih model tidak sejalan dengan
+keputusan yang diambil, dan kita sistematis memilih forecast yang akurat dan
+tidak berguna.
+
+Itu juga menjelaskan kenapa Croston dan TSB kalah di tabel bagian 3: keduanya
+memberi **laju** permintaan, yang justru yang dibutuhkan, tapi MASE
+menghukumnya.
+
+### Perbaikannya, dan hasil ukurnya
+
+Untuk intermittent dan lumpy, metrik utama diganti ke **error permintaan
+kumulatif** (`metrics.cumulative`, yang secara matematis `abs(bias)`). Diukur di
+VN2, satu backtest dinilai dua kali:
+
+| | MASE (lama) | Kumulatif (baru) |
+| --- | --- | --- |
+| **intermittent, 320 series** | | |
+| forecast ≈ nol | **43%** | **0%** |
+| error total permintaan | 0,606 | **0,460** (−24,2%) |
+| MASE | 0,881 | 0,886 (+0,5%) |
+| **lumpy, 191 series** | | |
+| forecast ≈ nol | **48%** | **1%** |
+| error total permintaan | 0,624 | **0,514** (−17,6%) |
+| MASE | 0,943 | 0,993 (+5,3%) |
+
+**511 dari 599 item yang dulu diusulkan "tidak perlu pesan" padahal laku,
+sekarang dapat usulan yang benar.** Harganya akurasi per-hari memburuk 0,5% dan
+5,3%.
+
+### Yang tidak berhasil, dicatat supaya tidak diulang
+
+MASE sebagai pemecah seri **tidak pernah membantu**. Sweep toleransi di VN2:
+
+| toleransi | intermittent | lumpy |
+| --- | --- | --- |
+| 0,00 / 0,01 / 0,02 | mov_avg · nol 0% | mov_avg · nol 1% |
+| 0,05 / 0,10 | mov_avg · nol 0% | croston · nol **7%** |
+
+Di bawah 0,05 dia tidak pernah aktif; di 0,05 ke atas dia mempromosikan Croston
+di lumpy, membayar 5% error total dan mengembalikan forecast nol dari 1% ke 7%
+demi MASE 0,4%. Toleransi diset **0,02**: mekanismenya hadir dan terbukti tidak
+mengganggu, dan menjawab keberatan bahwa error kumulatif sendirian memilih model
+terdatar. Yang jujur: di VN2 model terdatar **tetap** menang di kelas sparse.
+Toleransi ini membatasi masalahnya, tidak menghilangkannya.
+
+### Konsekuensi untuk pitch — ini mengubah bagian 3
+
+Dengan metrik yang benar, foundation model menang di **88 dari 599 series
+(15%)**, bukan 100%. Sisanya moving average.
+
+Itu posisi yang **lebih kuat**, bukan lebih lemah:
+
+> Foundation model menang di permintaan yang padat. Di permintaan yang jarang,
+> moving average lebih baik — dan sistem kami mengatakannya. 511 item cukup
+> dilayani Excel; kami menunjukkan 88 yang tidak, dan di situlah nilainya.
+
+Sistem yang berani bilang "Excel sudah cukup di sini" lebih dipercaya daripada
+yang mengklaim unggul di semuanya. Dan klaim "data perusahaannya yang memilih,
+bukan kami yang berasumsi" akhirnya punya bukti dua arah — sebelumnya TimesFM
+menang 100% dan klaim itu kosong.
+
+Reproduce: `py -3.11 backend/scripts/experiment_metric.py`

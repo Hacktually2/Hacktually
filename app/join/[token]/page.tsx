@@ -13,7 +13,7 @@ import { ButtonLink } from "@/components/ui/button";
 import { Info } from "@/components/ui/icons";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatNumber } from "@/lib/format";
-import { RequestAccess } from "./request-access";
+import { RequestAccess } from "@/components/app-shell/request-access";
 
 export const metadata: Metadata = { title: "Request branch access" };
 

@@ -205,9 +205,16 @@ export const backend = {
 
   /* ---- dashboards ------------------------------------------------------- */
 
-  // `location` scopes the whole response to one branch. The backend has
-  // supported it since B11; this client did not pass it, which meant a dataset
-  // holding several branches could only ever be read as one lump.
+  /**
+   * `location` scopes the whole response to one branch — KPIs, chart, posture
+   * and ranked actions — before anything is serialised. That is what makes it a
+   * boundary: without it the other branches' numbers are already in the payload
+   * and any narrowing we do is cosmetic.
+   *
+   * The backend has answered this parameter since B11. This client did not pass
+   * it, so a dataset holding several branches could only ever be read as one
+   * lump — which is what the branch network map needed it for.
+   */
   getOverview: (datasetId: string, location?: string) =>
     request<OverviewResponse>(
       `/api/v1/overview/${datasetId}${location ? `?location=${encodeURIComponent(location)}` : ""}`,
@@ -224,22 +231,32 @@ export const backend = {
 
   /**
    * The decision engine's output, already in the shape the inventory workspace
-   * renders. `location_id` is accepted but currently ignored by the service —
-   * see gap B11.
+   * renders.
+   *
+   * Every filter is applied server-side. `location` is the one that matters for
+   * access: an unknown or unauthorised branch code returns no rows rather than
+   * the whole network, so it fails closed.
    */
-  getRecommendations: (datasetId: string, limit = 500, locationId?: string) => {
-    const query = new URLSearchParams({ limit: String(limit) });
-    if (locationId) query.set("location_id", locationId);
-    return request<SupplyChainResponse>(
-      `/api/v1/recommendations/${datasetId}?${query}`,
-    );
+  getRecommendations: (
+    datasetId: string,
+    filters: { risk?: string; location?: string; category?: string } = {},
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value && value !== "all") query.set(key, value);
+    }
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<SupplyChainResponse>(`/api/v1/recommendations/${datasetId}${suffix}`);
   },
 
   getValue: (datasetId: string) =>
     request<ValueSimulation>(`/api/v1/value/${datasetId}`),
 
-  listForecasts: (datasetId: string, limit = 500) =>
-    request<BackendForecastList>(`/api/v1/forecasts/${datasetId}?limit=${limit}`),
+  listForecasts: (datasetId: string, limit = 500, location?: string) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (location) query.set("location", location);
+    return request<BackendForecastList>(`/api/v1/forecasts/${datasetId}?${query}`);
+  },
 
   getSeriesForecast: (datasetId: string, seriesId: string) =>
     request<BackendSeriesForecast>(

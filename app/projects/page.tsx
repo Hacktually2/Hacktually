@@ -6,6 +6,7 @@ import type { Project } from "@/app/dummy-data/types";
 import {
   listBranches,
   listProjectsForUser,
+  ownsDemoNetwork,
   visibleForecastProjects,
   type Project as AuthProject,
 } from "@/auth/db";
@@ -51,7 +52,12 @@ const STATUS = {
 
 export default async function ProjectsPage() {
   const session = await requireSession();
-  const { data: projects, note: projectsNote } = await getProjects(session.organisation);
+  // The PT ABC fixture dashboards belong to the demo story, so only the profile
+  // that owns the seeded network gets them. A workspace created at checkout
+  // starts genuinely empty.
+  const { data: projects, note: projectsNote } = await getProjects({
+    demoFixtures: ownsDemoNetwork(session.id),
+  });
   const isOwner = session.role === "owner";
   // Owned projects for an owner, branch-granted ones for a manager. `db.ts`
   // decides which; this page only renders the answer.

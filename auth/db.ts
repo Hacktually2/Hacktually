@@ -20,7 +20,7 @@ import {
   scryptSync,
   timingSafeEqual,
 } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -43,6 +43,8 @@ export interface AuthUser {
   organisation: string;
   role: Role;
   initials: string;
+  /** The owner whose company this manager joined, if they joined via a token. */
+  company_of: string | null;
 }
 
 export interface Project {
@@ -117,6 +119,30 @@ export interface Upload {
 }
 
 /* ---------------------------------------------------------------- database */
+
+/**
+ * Reads a flag from the environment, falling back to `.env` on disk.
+ *
+ * Next loads `.env` for us; a plain `node script.ts` does not. That gap is not
+ * academic — it is how the demo accounts came back after a deliberate wipe: a
+ * maintenance script imported this module, `AUTH_SKIP_SEED` was unset in that
+ * process, and `seed()` helpfully recreated three accounts with published
+ * passwords. A flag that only holds in one of two entry points is not a flag.
+ */
+function envFlag(name: string): string | undefined {
+  if (process.env[name] !== undefined) return process.env[name];
+  try {
+    for (const line of readFileSync(path.join(process.cwd(), ".env"), "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const [key, ...rest] = trimmed.split("=");
+      if (key.trim() === name) return rest.join("=").trim().replace(/^["']|["']$/g, "");
+    }
+  } catch {
+    /* no .env is the normal case */
+  }
+  return undefined;
+}
 
 const DATA_DIR = process.env.AUTH_DATA_DIR ?? path.join(process.cwd(), "data");
 export const UPLOAD_DIR = path.join(DATA_DIR, "uploads", "auth");
@@ -198,6 +224,17 @@ CREATE TABLE IF NOT EXISTS access_requests (
   UNIQUE (user_id, branch_id)
 );
 
+-- One live join token per owner. Regenerating replaces the row, which is how
+-- rotation works: the previous token stops resolving the moment a new one is
+-- written, with no separate revocation list to keep in step.
+CREATE TABLE IF NOT EXISTS company_tokens (
+  owner_id   TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  token      TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  uses       INTEGER NOT NULL DEFAULT 0
+);
+
 -- A file that has been received but not yet interpreted. It becomes a project
 -- only once the owner has answered the column questions.
 CREATE TABLE IF NOT EXISTS uploads (
@@ -223,6 +260,9 @@ function addColumnIfMissing(table: string, column: string, definition: string): 
 }
 
 addColumnIfMissing("branches", "forecast_project_id", "TEXT");
+// Which owner's company a manager joined. Null for owners and for the seeded
+// demo managers, who predate company tokens.
+addColumnIfMissing("users", "company_of", "TEXT");
 addColumnIfMissing("uploads", "dataset_id", "TEXT");
 
 type Row = Record<string, unknown>;
@@ -298,6 +338,7 @@ function toUser(row: Row): AuthUser {
     organisation: text(row, "organisation"),
     role: text(row, "role") as Role,
     initials: initialsOf(text(row, "name")),
+    company_of: row.company_of == null ? null : text(row, "company_of"),
   };
 }
 
@@ -338,11 +379,13 @@ export function createUser(input: {
   organisation: string;
   role: Role;
   password: string;
+  /** Set when a manager joined through an owner's company token. */
+  companyOf?: string | null;
 }): AuthUser {
   const id = `usr_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   db.prepare(
-    `INSERT INTO users (id, email, name, organisation, role, password_hash)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO users (id, email, name, organisation, role, password_hash, company_of)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.email.trim(),
@@ -350,8 +393,107 @@ export function createUser(input: {
     input.organisation.trim(),
     input.role,
     hashPassword(input.password),
+    input.companyOf ?? null,
   );
   return getUser(id)!;
+}
+
+/* ---------------------------------------------------------- company tokens */
+
+export interface CompanyToken {
+  token: string;
+  expires_at: string;
+  uses: number;
+  expired: boolean;
+}
+
+/** Two weeks: long enough to onboard a team, short enough to stop rotting. */
+const COMPANY_TOKEN_DAYS = 14;
+
+/**
+ * Issues an owner's company token, replacing any previous one.
+ *
+ * This token lets a stranger create a **manager** account inside the owner's
+ * company without paying, so it is the most dangerous string this app produces.
+ * Four things keep it from being a standing backdoor:
+ *
+ *   1. 256 bits of randomness — not guessable, not enumerable.
+ *   2. It expires. A token forgotten in a WhatsApp thread stops working.
+ *   3. Regenerating REPLACES it, because the row is keyed by owner. That is
+ *      revocation: there is no second list to forget to update.
+ *   4. It grants company membership and nothing else — no branch, no data. The
+ *      owner still approves every branch individually.
+ *
+ * It cannot mint an owner, so it can never be used to buy nothing and get the
+ * role that decides who sees what.
+ */
+export function issueCompanyToken(ownerId: string): CompanyToken {
+  const token = randomBytes(32).toString("base64url");
+  db.prepare(
+    `INSERT INTO company_tokens (owner_id, token, created_at, expires_at, uses)
+     VALUES (?, ?, datetime('now'), datetime('now', ?), 0)
+     ON CONFLICT (owner_id) DO UPDATE SET
+       token      = excluded.token,
+       created_at = excluded.created_at,
+       expires_at = excluded.expires_at,
+       uses       = 0`,
+  ).run(ownerId, token, `+${COMPANY_TOKEN_DAYS} days`);
+  return getCompanyToken(ownerId)!;
+}
+
+export function getCompanyToken(ownerId: string): CompanyToken | null {
+  const row = db
+    .prepare(
+      `SELECT token, expires_at, uses, expires_at < datetime('now') AS expired
+       FROM company_tokens WHERE owner_id = ?`,
+    )
+    .get(ownerId) as Row | undefined;
+  if (!row) return null;
+  return {
+    token: text(row, "token"),
+    expires_at: text(row, "expires_at"),
+    uses: num(row, "uses"),
+    expired: num(row, "expired") === 1,
+  };
+}
+
+export function revokeCompanyToken(ownerId: string): void {
+  db.prepare("DELETE FROM company_tokens WHERE owner_id = ?").run(ownerId);
+}
+
+/**
+ * The owner a company token belongs to, or null.
+ *
+ * Expiry is checked in SQL rather than after the fetch, so an expired token is
+ * indistinguishable from a wrong one — the caller cannot learn that a token was
+ * once valid.
+ */
+export function ownerOfCompanyToken(token: string): AuthUser | null {
+  if (!token) return null;
+  const row = db
+    .prepare(
+      `SELECT owner_id FROM company_tokens
+       WHERE token = ? AND expires_at > datetime('now')`,
+    )
+    .get(token) as Row | undefined;
+  if (!row) return null;
+
+  const owner = getUser(text(row, "owner_id"));
+  // A token whose owner is no longer an owner is not a way in.
+  return owner && owner.role === "owner" ? owner : null;
+}
+
+export function countCompanyTokenUse(token: string): void {
+  db.prepare("UPDATE company_tokens SET uses = uses + 1 WHERE token = ?").run(token);
+}
+
+/** Managers who joined this owner's company, newest first. */
+export function listCompanyMembers(ownerId: string): AuthUser[] {
+  return (
+    db
+      .prepare("SELECT * FROM users WHERE company_of = ? ORDER BY created_at DESC")
+      .all(ownerId) as Row[]
+  ).map(toUser);
 }
 
 /* ----------------------------------------------------------------- uploads */
@@ -521,11 +663,18 @@ export function listProjectsForUser(user: AuthUser): Project[] {
   const sql =
     user.role === "owner"
       ? `SELECT * FROM projects WHERE owner_id = ? ORDER BY created_at DESC`
-      : `SELECT DISTINCT p.* FROM projects p
-         JOIN branches b ON b.project_id = p.id
+      : // A manager sees a project when they hold a branch in it, when they are
+        // waiting on one, or when it belongs to the company they joined — that
+        // last one is the point of joining: it is how they find the branches to
+        // ask for. Seeing the project NAME is not seeing its data; every row
+        // still goes through requireForecastAccess.
+        `SELECT DISTINCT p.* FROM projects p
+         LEFT JOIN branches b        ON b.project_id = p.id
          LEFT JOIN branch_access a   ON a.branch_id = b.id AND a.user_id = ?1
          LEFT JOIN access_requests r ON r.branch_id = b.id AND r.user_id = ?1
-         WHERE a.user_id IS NOT NULL OR r.user_id IS NOT NULL
+         WHERE a.user_id IS NOT NULL
+            OR r.user_id IS NOT NULL
+            OR p.owner_id = (SELECT company_of FROM users WHERE id = ?1)
          ORDER BY p.created_at DESC`;
   return (db.prepare(sql).all(user.id) as Row[]).map(toProject);
 }
@@ -609,10 +758,16 @@ export function findBranchByForecastProject(forecastProjectId: string): Branch |
  * Of these forecasting projects, which may this user open.
  *
  * The same rule `requireForecastAccess` enforces, in set form, so the branch
- * switcher and the guard cannot disagree: a project no branch claims stays
- * visible, a claimed one needs the branch. Keeping both readings in one
- * function is the point — two copies of this rule would drift, and the drift
- * would look like a project that is listed but 404s when opened.
+ * switcher and the guard cannot disagree — two copies of this rule would drift,
+ * and the drift would look like a project that is listed but 404s when opened.
+ *
+ * **Default deny.** An earlier version treated a project no branch claims as
+ * ungoverned and therefore visible to everyone, on the reasoning that a dataset
+ * pushed straight into the forecasting service was not this layer's business.
+ * That failed open: three abandoned uploads were readable — real rows, real
+ * quantities — by every signed-in account on the service. Now an unclaimed
+ * dataset is visible only to whoever uploaded it, and one this layer has never
+ * seen is visible to nobody.
  */
 export function visibleForecastProjects(
   userId: string,
@@ -638,7 +793,14 @@ export function visibleForecastProjects(
     }),
   );
 
-  return new Set(candidateIds.filter((id) => claimed.get(id) ?? true));
+  return new Set(
+    candidateIds.filter((id) => {
+      const allowed = claimed.get(id);
+      if (allowed !== undefined) return allowed;
+      // Unclaimed: theirs only if they are the one who uploaded it.
+      return uploaderOf(id) === userId;
+    }),
+  );
 }
 
 /**
@@ -665,7 +827,7 @@ export function accessibleLocations(
   const [a, b] = idVariants(forecastProjectId);
   const claiming = db
     .prepare(
-      `SELECT br.code, (p.owner_id = ?1 OR acc.user_id IS NOT NULL) AS allowed
+      `SELECT br.code, p.owner_id, acc.user_id AS granted
        FROM branches br
        JOIN projects p             ON p.id = br.project_id
        LEFT JOIN branch_access acc ON acc.branch_id = br.id AND acc.user_id = ?1
@@ -673,8 +835,40 @@ export function accessibleLocations(
     )
     .all(userId, a, b) as Row[];
 
-  if (claiming.length === 0) return null;
-  return claiming.filter((row) => num(row, "allowed") === 1).map((row) => text(row, "code"));
+  // Nothing claims it yet. Unrestricted for the uploader — there are no
+  // branches to scope to — and unreachable for anyone else, which
+  // `requireForecastAccess` enforces before this is ever consulted.
+  if (claiming.length === 0) {
+    return uploaderOf(forecastProjectId) === userId ? null : [];
+  }
+
+  // The owner of the project that claims it sees the whole network. This is the
+  // distinction that has to be kept: returning their branch list instead of
+  // null reads as "restricted to these", and the caller then scopes an owner to
+  // one branch — which is what happened before this was split out.
+  if (claiming.some((row) => text(row, "owner_id") === userId)) return null;
+
+  return claiming
+    .filter((row) => row.granted !== null)
+    .map((row) => text(row, "code"));
+}
+
+/**
+ * Who uploaded this dataset through the app, if anyone.
+ *
+ * A dataset exists here before any branch claims it: the owner has uploaded the
+ * file but not yet answered the column questions. This is what keeps it theirs
+ * in the meantime.
+ *
+ * Null means the auth layer has never seen it — a dataset pushed straight into
+ * the forecasting service. That is now a reason to refuse, not to allow.
+ */
+export function uploaderOf(datasetId: string): string | null {
+  const [a, b] = idVariants(datasetId);
+  const row = db
+    .prepare("SELECT owner_id FROM uploads WHERE dataset_id IN (?, ?) ORDER BY created_at DESC")
+    .get(a, b) as Row | undefined;
+  return row ? text(row, "owner_id") : null;
 }
 
 export function hasBranchAccess(userId: string, branchId: string): boolean {
@@ -922,12 +1116,39 @@ const DEMO_PROJECT = {
 };
 
 /**
+ * Does this person own the seeded demo network?
+ *
+ * The three fixture dashboards (`prj-abc`, `prj-nus`, `prj-sgr`) belong to the
+ * demo story, not to the product. They already stay out of a new owner's
+ * workspace because the seeded branches claim them and the access filter
+ * catches them — but that works by accident: a fourth fixture with no claiming
+ * branch would show up in every workspace ever created.
+ *
+ * So the rule is stated rather than inferred. Fixtures are for whoever owns the
+ * seeded network, and for nobody else.
+ */
+export function ownsDemoNetwork(userId: string): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM projects WHERE id = ? AND owner_id = ?")
+      .get(DEMO_PROJECT.id, userId) !== undefined
+  );
+}
+
+/**
  * Idempotent, and safe when several processes start at once — `next build`
  * collects pages in parallel workers, all of which import this module against
  * the same file. The check is an optimisation; `ON CONFLICT DO NOTHING` is what
  * actually makes it safe, because a check followed by an insert is a race.
  */
 function seed(): void {
+  // Deleting the database is not enough to get an empty instance: this runs on
+  // every import, so the demo accounts and network come straight back on the
+  // next request. `AUTH_SKIP_SEED=1` is how you keep a wiped instance wiped —
+  // for demoing sign-up from nothing, or for a deployment that should never
+  // carry demo credentials.
+  if (envFlag("AUTH_SKIP_SEED") === "1") return;
+
   const insert = db.prepare(
     `INSERT INTO users (id, email, name, organisation, role, password_hash)
      VALUES (?, ?, ?, ?, ?, ?)

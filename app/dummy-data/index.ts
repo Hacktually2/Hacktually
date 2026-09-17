@@ -68,15 +68,19 @@ function settle(): Promise<void> | undefined {
  * A real project read model now, not a dataset list dressed up as one: name,
  * organisation, series count, status and a sparkline all come from the service.
  *
- * The seeded fixture branches stay appended, because they are the demo network
- * and exist by design rather than as a failed live read.
+ * `demoFixtures` appends the three fixture dashboards. Off by default: a
+ * workspace created five minutes ago has no business showing PT ABC's branches,
+ * and callers pass `ownsDemoNetwork(user.id)` so the demo profile keeps them.
  */
-export async function getProjects(_organisation = "PT ABC Distribution"): Promise<Sourced<Project[]>> {
+export async function getProjects(
+  options: { demoFixtures?: boolean } = {}
+): Promise<Sourced<Project[]>> {
   await settle();
   const sourced = await fromBackend(
     () => backend.listProjects(),
-    () => [],
+    () => []
   );
+  if (!options.demoFixtures) return sourced;
   return { ...sourced, data: [...sourced.data, ...PROJECTS] };
 }
 
@@ -160,13 +164,22 @@ export async function getJobSequence(): Promise<JobState[]> {
   return JOB_SEQUENCE;
 }
 
-/** LIVE — GET /api/v1/overview/{dataset_id}. */
+/**
+ * LIVE — GET /api/v1/overview/{dataset_id}
+ *
+ * `location` scopes the entire response server-side, so a branch manager's
+ * KPIs, chart and ranked actions are built from their branch alone. The caller
+ * decides who may ask for which branch — see `branchScope` in auth/session.ts.
+ */
 export async function getOverview(
   datasetId: string,
-  location?: string,
+  location?: string | null
 ): Promise<Sourced<OverviewResponse>> {
   await settle();
-  return fromBackend(() => backend.getOverview(datasetId, location), () => OVERVIEW);
+  return fromBackend(
+    () => backend.getOverview(datasetId, location ?? undefined),
+    () => OVERVIEW
+  );
 }
 
 /**
@@ -177,13 +190,45 @@ export async function getOverview(
  */
 export async function getDemand(
   datasetId: string,
-  filters: Partial<DemandResponse["active_filters"]> = {}
+  filters: Partial<DemandResponse["active_filters"]> = {},
+  /** Locations the viewer may see, or null for unrestricted. */
+  allowed: string[] | null = null
 ): Promise<Sourced<DemandResponse>> {
   await settle();
   // LIVE. Filtering is the backend's job and it does it — the query goes
   // straight through, and the response says which filters it applied.
   return fromBackend(
-    () => backend.getDemand(datasetId, filters as Record<string, string | undefined>),
+    async () => {
+      const response = await backend.getDemand(
+        datasetId,
+        filters as Record<string, string | undefined>
+      );
+      if (allowed === null) return response;
+      const permitted = new Set(allowed);
+
+      // `forecast_rows` and the chart honour `location`. Two other parts of the
+      // same response do not:
+      //
+      //   filters.locations   every branch's NAME  — cosmetic (gap B11b)
+      //   sales_by_location   every branch's SALES — a real leak (gap B11c)
+      //
+      // The second one matters: it is a bar per branch with figures attached,
+      // served to someone scoped to one branch. Narrowed to what they hold, so
+      // it stays off the screen — but the values are still in the payload, so
+      // this is mitigation. Only the service can fix it.
+      return {
+        ...response,
+        sales_by_location: response.sales_by_location.filter((bar) =>
+          permitted.has(bar.key) || permitted.has(bar.label)
+        ),
+        filters: {
+          ...response.filters,
+          locations: response.filters.locations.filter(
+            (option) => option.value === "all" || permitted.has(option.value)
+          ),
+        },
+      };
+    },
     () => buildDemandResponse(filters)
   );
 }
@@ -191,38 +236,48 @@ export async function getDemand(
 /**
  * LIVE — GET /api/v1/recommendations/{dataset_id}
  *
- * Returns the inventory workspace's own shape, with every column populated:
- * coverage, lead time, MOQ, category and the reorder decomposition all come
- * from the decision engine now.
+ * Every filter is applied by the service, including `location`. Nothing is
+ * narrowed after it arrives, which is the difference between a boundary and a
+ * display filter: rows for other branches are never in the payload.
  *
- * `location_id` is passed but the service still ignores it, so location and
- * category narrowing is applied here. That is display filtering, not a security
- * boundary — see gap B11, still open.
+ * An unknown or unauthorised branch code returns no rows rather than the whole
+ * network, so a mistyped scope fails closed.
  */
 export async function getSupplyChain(
   datasetId: string,
   filters: SupplyChainFilters = {},
-  _mode: "ritel" | "manufaktur" = "ritel"
+  scopedLocation?: string | null
 ): Promise<Sourced<SupplyChainResponse>> {
   await settle();
   return fromBackend(
     async () => {
-      const response = await backend.getRecommendations(
-        datasetId,
-        500,
-        filters.location && filters.location !== "all" ? filters.location : undefined
-      );
-      const rows = response.rows.filter(
-        (row) =>
-          (!filters.risk || filters.risk === "all" || row.risk === filters.risk) &&
-          (!filters.location ||
-            filters.location === "all" ||
-            row.location_id === filters.location) &&
-          (!filters.category ||
-            filters.category === "all" ||
-            row.category === filters.category)
-      );
-      return { ...response, rows };
+      const response = await backend.getRecommendations(datasetId, {
+        risk: filters.risk,
+        // The access scope wins over whatever the filter bar asked for: a
+        // manager cannot widen their own view by editing the query string.
+        location: scopedLocation ?? filters.location,
+        category: filters.category,
+      });
+
+      if (!scopedLocation) return response;
+
+      // The rows come back scoped, but `filters.locations` still enumerates
+      // every branch in the dataset, which would put the names of branches this
+      // person cannot open into their filter dropdown.
+      //
+      // Narrowing it here keeps them off the screen. It is NOT a fix: the names
+      // were already in the response, so this is a display filter. The real fix
+      // is for the service to scope its filter options the way it scopes its
+      // rows — see gap B11b in migration-report.md.
+      return {
+        ...response,
+        filters: {
+          ...response.filters,
+          locations: response.filters.locations.filter(
+            (option) => option.value === scopedLocation || option.value === "all"
+          ),
+        },
+      };
     },
     () => buildSupplyChainResponse(filters)
   );

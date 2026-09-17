@@ -28,8 +28,10 @@ export function Wordmark({
 const NAV = [
   { href: "/#platform", label: "Platform" },
   { href: "/#workflow", label: "How it works" },
+  { href: "/#branches", label: "Branch access" },
   { href: "/#calendar", label: "Indonesian demand" },
   { href: "/#deployment", label: "Deployment" },
+  { href: "/#pricing", label: "Pricing" },
 ];
 
 /**
@@ -80,7 +82,7 @@ export function SiteHeader({ session }: { session: Session | null }) {
               </ButtonLink>
               <ButtonLink href="/login" size="sm">
                 <span className="sm:hidden">Demo</span>
-                <span className="hidden sm:inline">Request a demo</span>
+                <span className="hidden sm:inline">Open the live demo</span>
               </ButtonLink>
             </>
           )}
@@ -130,6 +132,7 @@ export function SiteFooter() {
           links={[
             { href: "/#platform", label: "Overview" },
             { href: "/#workflow", label: "How it works" },
+            { href: "/#branches", label: "Branch access" },
             { href: "/#calendar", label: "Indonesian demand calendar" },
           ]}
         />
@@ -145,7 +148,7 @@ export function SiteFooter() {
           title="Access"
           links={[
             { href: "/login", label: "Sign in" },
-            { href: "/login", label: "Request a demo" },
+            { href: "/login", label: "Open the live demo" },
           ]}
         />
       </div>

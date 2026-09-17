@@ -5,7 +5,7 @@ import { Wordmark } from "@/components/marketing/site-chrome";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Check } from "@/components/ui/icons";
 import { getSession } from "@/lib/session";
-import { DEMO_ACCOUNTS } from "@/auth/db";
+import { DEMO_ACCOUNTS, findUserByEmail } from "@/auth/db";
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = {
@@ -31,8 +31,11 @@ export default async function LoginPage() {
           <p className="mt-1.5 mb-8 text-body text-ink-secondary">
             Access your forecasting workspace and current inventory position.
           </p>
+          {/* Only the seeded accounts that actually exist. With AUTH_SKIP_SEED
+              set, or after the database has been cleared, the panel disappears
+              instead of offering credentials that will be refused. */}
           <LoginForm
-            demoAccounts={DEMO_ACCOUNTS.map((a) => ({
+            demoAccounts={DEMO_ACCOUNTS.filter((a) => findUserByEmail(a.email)).map((a) => ({
               email: a.email,
               password: a.password,
               name: a.name,
