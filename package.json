@@ -7,17 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check:fixtures": "node --experimental-strip-types --no-warnings app/dummy-data/check.ts"
+    "check:fixtures": "node --experimental-strip-types --no-warnings app/dummy-data/check.ts",
+    "check:auth": "node --experimental-strip-types --no-warnings auth/check.ts",
+    "data:generate": "python3 scripts/generate_dataset.py"
   },
   "dependencies": {
     "lucide-react": "^1.47.0",
     "next": "16.3.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.13.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

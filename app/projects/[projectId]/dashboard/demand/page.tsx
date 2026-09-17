@@ -7,6 +7,7 @@ import { ForecastChart } from "@/components/charts/forecast-chart";
 import { FilterBar, type FilterSpec } from "@/components/dashboard/filter-bar";
 import { ForecastTable } from "@/components/dashboard/forecast-table";
 import { Info } from "@/components/ui/icons";
+import { DataSource } from "@/components/ui/data-source";
 import { Field, PageHeader, Panel } from "@/components/ui/panel";
 import { DEMAND_COLOR } from "@/components/ui/status";
 import { formatNumber, formatPercent } from "@/lib/format";
@@ -24,7 +25,7 @@ export default async function DemandPage({
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
   // Filters go to the data layer, not into the components.
-  const demand = await getDemand(project.dataset_id, {
+  const { data: demand, note: demandNote } = await getDemand(project.dataset_id, {
     date_range: one(query.date_range),
     product: one(query.product),
     location: one(query.location),
@@ -39,7 +40,9 @@ export default async function DemandPage({
     active.product !== "all" && active.location !== "all"
       ? `${active.product}__${active.location}`
       : null;
-  const seriesDetail = seriesId ? await getSeriesDetail(project.dataset_id, seriesId) : null;
+  const seriesDetail = seriesId
+    ? (await getSeriesDetail(project.dataset_id, seriesId)).data
+    : null;
   const chart = seriesDetail ?? demand.chart;
 
   const filterSpecs: FilterSpec[] = [
@@ -92,6 +95,7 @@ export default async function DemandPage({
             </>
           }
         />
+        <DataSource note={demandNote} className="mt-4 max-w-2xl" />
       </div>
 
       <div className="mt-5 animate-enter [--enter-delay:60ms]">

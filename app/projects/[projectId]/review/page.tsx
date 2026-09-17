@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { getHealth, getMapping, getProject } from "@/app/dummy-data";
 import type { HealthReport } from "@/app/dummy-data/types";
 import { AlertTriangle, Check, Info } from "@/components/ui/icons";
+import { requireForecastAccess } from "@/auth/session";
+import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatNumber } from "@/lib/format";
 import { MappingReview } from "./mapping-review";
@@ -11,13 +13,12 @@ export const metadata: Metadata = { title: "Review dataset" };
 
 export default async function ReviewPage({ params }: PageProps<"/projects/[projectId]/review">) {
   const { projectId } = await params;
+  await requireForecastAccess(projectId);
   const project = await getProject(projectId);
   if (!project) notFound();
 
-  const [mapping, health] = await Promise.all([
-    getMapping(project.dataset_id),
-    getHealth(project.dataset_id),
-  ]);
+  const [{ data: mapping, note: mappingNote }, { data: health, note: healthNote }] =
+    await Promise.all([getMapping(project.dataset_id), getHealth(project.dataset_id)]);
 
   return (
     <main className="layout-shell flex-1 py-10">
@@ -31,6 +32,8 @@ export default async function ReviewPage({ params }: PageProps<"/projects/[proje
           </>
         }
       />
+
+      <DataSource note={mappingNote ?? healthNote} className="mt-5" />
 
       {mapping.preset_matched && (
         <p className="mt-6 flex items-start gap-2.5 rounded-md border border-brand-blue/20 bg-brand-blue-soft px-4 py-3 text-body-sm text-brand-deep">
@@ -49,7 +52,9 @@ export default async function ReviewPage({ params }: PageProps<"/projects/[proje
         >
           <MappingReview
             mapping={mapping}
-            dashboardHref={`/projects/${projectId}/dashboard`}
+            projectId={projectId}
+            datasetId={project.dataset_id}
+            mode={project.industry_mode}
           />
         </Panel>
 

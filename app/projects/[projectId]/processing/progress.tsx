@@ -4,43 +4,84 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { JobState } from "@/app/dummy-data/types";
 import { ButtonLink } from "@/components/ui/button";
-import { Check } from "@/components/ui/icons";
+import { AlertTriangle, Check } from "@/components/ui/icons";
+import { pollJob } from "./actions";
 
 /**
  * Processing progress (design.md §54, frontend_user_flow.md §58).
  *
- * Operational status, not theatre. Against the real backend this component is
- * unchanged — the timer is replaced by polling GET /api/v1/jobs/{job_id}, which
- * returns exactly the JobState shape rendered here.
+ * Operational status, not theatre. With a `jobId` this polls the real job and
+ * every number on screen is the backend's; without one — an old project, or a
+ * page reopened after the job id was lost — it walks the fixture sequence so
+ * the screen still explains what the pipeline does.
  */
+const POLL_MS = 1500;
 const STEP_MS = 1600;
 
 export function ProcessingProgress({
   sequence,
   reviewHref,
+  projectId,
+  jobId,
 }: {
   sequence: JobState[];
   reviewHref: string;
+  projectId: string;
+  /** Null when there is no live job to follow. */
+  jobId: string | null;
 }) {
   const router = useRouter();
   const [index, setIndex] = useState(0);
-  const job = sequence[index];
-  const done = job.status === "completed";
+  const [liveJob, setLiveJob] = useState<JobState | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
 
+  const job = liveJob ?? sequence[index];
+  const done = job.status === "completed";
+  const failed = job.status === "failed";
+
+  // Live polling. Stops on a terminal state, and on an error rather than
+  // hammering a service that is already unhappy.
   useEffect(() => {
-    if (done) {
-      router.prefetch(reviewHref);
-      return;
-    }
+    if (!jobId || done || failed) return;
+    let cancelled = false;
+
+    const timer = setTimeout(async () => {
+      try {
+        const { job: next } = await pollJob(projectId, jobId);
+        if (!cancelled) setLiveJob(next);
+      } catch {
+        if (!cancelled) {
+          setPollError("Lost contact with the forecasting service. Reload to try again.");
+        }
+      }
+    }, POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobId, projectId, done, failed, liveJob]);
+
+  // Fixture walk, only when there is no real job behind this screen.
+  useEffect(() => {
+    if (jobId || done) return;
     const timer = setTimeout(() => setIndex((i) => Math.min(sequence.length - 1, i + 1)), STEP_MS);
     return () => clearTimeout(timer);
-  }, [done, index, sequence.length, router, reviewHref]);
+  }, [jobId, done, index, sequence.length]);
+
+  useEffect(() => {
+    if (done) router.prefetch(reviewHref);
+  }, [done, router, reviewHref]);
 
   return (
     <div>
       <div className="flex items-baseline justify-between gap-4">
         <p className="text-body font-semibold text-brand-deep">
-          {done ? "Processing complete" : (job.message ?? "Processing dataset")}
+          {failed
+            ? "Processing failed"
+            : done
+              ? "Processing complete"
+              : (job.message ?? "Processing dataset")}
         </p>
         <p className="text-body-sm font-semibold text-ink" data-numeric>
           {job.progress}%
@@ -60,6 +101,16 @@ export function ProcessingProgress({
           style={{ width: `${job.progress}%` }}
         />
       </div>
+
+      {(failed || pollError) && (
+        <p
+          className="mt-4 flex items-start gap-2 rounded-sm border border-status-critical/25 bg-status-critical-surface px-3 py-2.5 text-body-sm text-status-critical"
+          role="alert"
+        >
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          {pollError ?? job.message ?? "The forecasting service could not finish this run."}
+        </p>
+      )}
 
       <ol className="mt-7 space-y-3.5">
         {job.steps.map((step) => (

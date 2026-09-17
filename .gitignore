@@ -55,6 +55,8 @@ backend/.venv/
 backend/__pycache__/
 **/__pycache__/
 data/app.db*
+data/auth.db*
 data/uploads/
 data/demo/
+data/generated/
 .env

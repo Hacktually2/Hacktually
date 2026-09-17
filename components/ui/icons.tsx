@@ -36,6 +36,7 @@ import {
   Sun as LuSun,
   TriangleAlert as LuTriangleAlert,
   Upload as LuUpload,
+  Users as LuUsers,
   X as LuX,
   type LucideProps,
 } from "lucide-react";
@@ -79,3 +80,4 @@ export const LogOut = withDefaults(LuLogOut);
 export const Sun = withDefaults(LuSun);
 export const Moon = withDefaults(LuMoon);
 export const Settings = withDefaults(LuSettings);
+export const Users = withDefaults(LuUsers);

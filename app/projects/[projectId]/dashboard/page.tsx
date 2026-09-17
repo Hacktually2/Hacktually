@@ -7,6 +7,7 @@ import type { InventoryPosture, PriorityAction } from "@/app/dummy-data/types";
 import { ForecastChart } from "@/components/charts/forecast-chart";
 import { KpiCard } from "@/components/dashboard/kpi-card";
 import { ArrowRight } from "@/components/ui/icons";
+import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { RiskBadge } from "@/components/ui/status";
 import { formatDateTime, formatDays, formatNumber } from "@/lib/format";
@@ -37,7 +38,10 @@ export default async function OverviewPage({
   const project = await getProject(projectId);
   if (!project) notFound();
 
-  const [overview, session] = await Promise.all([getOverview(project.dataset_id), getSession()]);
+  const [{ data: overview, note: overviewNote }, session] = await Promise.all([
+    getOverview(project.dataset_id),
+    getSession(),
+  ]);
 
   return (
     <main className="layout-shell flex-1 py-8">
@@ -47,6 +51,7 @@ export default async function OverviewPage({
           description={`Here is the current demand and inventory outlook for ${project.organisation}.`}
           context={<>Last processed {formatDateTime(overview.generated_at)}</>}
         />
+        <DataSource note={overviewNote} className="mt-4 max-w-2xl" />
       </div>
 
       {/* Primary KPI row */}

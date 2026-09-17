@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { DEFAULT_PROJECT_ID } from "@/app/dummy-data";
 import { Panel, PageHeader } from "@/components/ui/panel";
 import { Check, Info } from "@/components/ui/icons";
 import { UploadPanel } from "./upload-panel";
@@ -10,7 +9,8 @@ const EXPECTED = [
   { field: "Date", note: "Transaction or order date", required: true },
   { field: "Product", note: "SKU or product code", required: true },
   { field: "Quantity", note: "Units sold or shipped", required: true },
-  { field: "Location", note: "Branch, warehouse or store", required: false },
+  { field: "Branch ID", note: "Which branch the row belongs to", required: true },
+  { field: "Branch location", note: "City or area of that branch", required: true },
   { field: "Price", note: "Unit price, enables revenue forecast", required: false },
   { field: "Inventory", note: "Closing stock, enables reorder advice", required: false },
 ];
@@ -22,16 +22,16 @@ export default function NewProjectPage() {
     <main className="layout-shell flex-1 py-10">
       <PageHeader
         title="Upload dataset"
-        description="Start a new analysis context. The system profiles the file and asks you to confirm what it found before anything runs."
+        description="Start a new analysis context. The file is profiled and you confirm what each column means — including which one identifies the branch — before anything is split or forecast."
       />
 
       <div className="mt-8 grid animate-enter gap-5 [--enter-delay:80ms] lg:grid-cols-[1.4fr_1fr] lg:items-start">
         <Panel>
-          <UploadPanel targetProjectId={DEFAULT_PROJECT_ID} />
+          <UploadPanel />
         </Panel>
 
         <div className="space-y-5">
-          <Panel title="Expected fields" description="Three are required. The rest unlock more of the product.">
+          <Panel title="Expected fields" description="Five are required. The rest unlock more of the product.">
             <ul className="space-y-2.5">
               {EXPECTED.map((item) => (
                 <li key={item.field} className="flex items-start justify-between gap-4">
