@@ -33,15 +33,23 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     TARGET: (
         "qty", "quantity", "kuantitas", "jumlah", "demand", "sales", "sold",
         "terjual", "unitssold", "qtyout", "quantityout", "units", "penjualan",
-        "movement", "keluar",
+        "movement", "keluar", "volume", "pemakaian", "konsumsi", "shipped",
+        "dikirim", "issued",
     ),
     ITEM_ID: (
         "sku", "item", "product", "barang", "kodebrg", "kodebarang", "itemcode",
         "productcode", "itemno", "nobarang", "kodeproduk", "partnumber",
+        # Public/statistical datasets name the thing being measured differently
+        # from a distributor. Learned from the WFP and PIHPS files, where the
+        # item column is "commodity" / "Komoditas" and nothing matched.
+        "commodity", "komoditas", "material", "artikel", "goods",
     ),
     LOCATION_ID: (
         "location", "lokasi", "branch", "cabang", "warehouse", "gudang",
         "store", "toko", "outlet", "dc", "depot", "site",
+        # Geographic naming, as used by BPS/WFP/Bank Indonesia exports.
+        "market", "pasar", "wilayah", "provinsi", "province", "kota",
+        "kabupaten", "region", "daerah", "admin1", "admin2",
     ),
     INVENTORY: (
         "inventory", "stock", "stok", "onhand", "stockonhand", "saldo",

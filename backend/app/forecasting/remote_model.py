@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 import numpy as np
 
@@ -28,6 +29,11 @@ from . import gpu_client
 from .base import Forecast, ForecastModel, empirical_interval
 
 log = logging.getLogger(__name__)
+
+
+def _recheck_after() -> float:
+    """Seconds before a failed probe is retried rather than trusted."""
+    return float(os.getenv("GPU_RECHECK_SECONDS", "60"))
 
 
 def _offline_allowed() -> bool:
@@ -46,6 +52,7 @@ class RemoteFoundationModel(ForecastModel):
         self.licence = licence
         self._available: bool | None = None
         self._error: str = ""
+        self._checked_at: float = 0.0
 
     @classmethod
     def get(cls, model_id: str, licence: str = "") -> "RemoteFoundationModel":
@@ -55,7 +62,16 @@ class RemoteFoundationModel(ForecastModel):
 
     @property
     def available(self) -> bool:
+        # A failed probe expires. Caching it forever means one tunnel hiccup at
+        # startup removes the foundation models for the life of the process,
+        # even after the service comes back — which is exactly how a working GPU
+        # box ends up absent from the model mix on stage.
+        if self._available is False and self._checked_at:
+            if time.time() - self._checked_at > _recheck_after():
+                self._available = None
+
         if self._available is None:
+            self._checked_at = time.time()
             self._available, self._error = gpu_client.probe(self.model_id)
             if self._available:
                 log.info("%s reachable on GPU service (%s)", self.model_id, self.licence)

@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS series_profiles (
     censored_periods INTEGER DEFAULT 0,
     forecastable    INTEGER DEFAULT 1,
     exclusion_reason TEXT,
+    category        TEXT,
+    avg_demand      REAL,
     PRIMARY KEY (dataset_id, series_id)
 );
 
@@ -116,6 +118,25 @@ CREATE TABLE IF NOT EXISTS recommendations (
     raw_material_qty    REAL,
     explanation_json    TEXT,
     PRIMARY KEY (dataset_id, series_id)
+);
+
+-- Business parameters the decision engine needs and must never invent.
+-- Resolved most-specific-first: series, then category, then dataset default.
+-- Category scope is what makes this usable: an ops lead sets lead time once per
+-- product group, not 428 times.
+CREATE TABLE IF NOT EXISTS business_params (
+    dataset_id        TEXT NOT NULL,
+    scope             TEXT NOT NULL,   -- 'default' | 'category' | 'series'
+    scope_value       TEXT NOT NULL DEFAULT '',
+    lead_time_days    INTEGER,
+    moq               REAL,
+    service_level     REAL,
+    unit_cost         REAL,
+    unit_margin       REAL,
+    holding_cost_rate REAL,
+    bom_factor        REAL,
+    updated_at        TEXT,
+    PRIMARY KEY (dataset_id, scope, scope_value)
 );
 
 CREATE TABLE IF NOT EXISTS hierarchy (

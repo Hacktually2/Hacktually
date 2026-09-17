@@ -16,6 +16,7 @@ import polars as pl
 
 from ..canonical import (
     BusinessParams,
+    CATEGORY,
     DecisionMode,
     DemandClass,
     Frequency,
@@ -32,6 +33,7 @@ from ..cleaning.pipeline import CleaningReport, canonicalize, clean
 from ..db import database as db
 from ..decision import reorder as reorder_mod
 from ..decision import hierarchy as hierarchy_mod
+from ..decision import params as params_mod
 from ..decision import value_sim
 from ..demand.classifier import portfolio_summary, profile_series
 from ..enrich import calendar as calendar_mod
@@ -335,7 +337,7 @@ def confirm_mapping(
 
 # ---------------------------------------------------------------- preparation
 
-def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict]:
+def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, CleaningReport]:
     """Union every source, each canonicalized with its own mapping, then clean once.
 
     Cleaning has to happen after the union, not per source: frequency detection
@@ -375,18 +377,45 @@ def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict]:
     frequency = Frequency(report.frequency)
 
     health = health_mod.build_report(canonical, report, frequency)
-    return canonical, frequency, health
+    return canonical, frequency, health, report
 
 
 def prepare(dataset_id: str) -> dict:
     """Canonicalize, clean, profile and score. Idempotent."""
-    canonical, frequency, health = _load_canonical(dataset_id)
+    canonical, frequency, health, cleaning_report = _load_canonical(dataset_id)
 
     canonical, censored_counts = censoring.detect(canonical)
     profiles = profile_series(canonical, censored_counts)
 
+    # Re-run the health assessment now that ADI exists. Lifecycle needs each
+    # series' own demand interval to tell a slow mover from a dead one, and ADI
+    # is only known after profiling — so the first pass was the cheap version.
+    adi_by_series = {sid: prof.adi for sid, prof in profiles.items()}
+    health = health_mod.build_report(
+        canonical, cleaning_report, frequency, adi_by_series
+    )
+
     forecastable = set(health["forecastable_ids"])
     excluded = {e["series_id"]: e["reason"] for e in health.get("series_excluded", [])}
+
+    # Category comes from the data and drives parameter defaults, so it has to
+    # be stored per series rather than recomputed at decision time.
+    category_by_series: dict[str, str] = {}
+    if CATEGORY in canonical.columns:
+        for row in (
+            canonical.group_by(SERIES_ID)
+            .agg(pl.col(CATEGORY).drop_nulls().first().alias("cat"))
+            .iter_rows(named=True)
+        ):
+            if row["cat"] is not None:
+                category_by_series[row[SERIES_ID]] = str(row["cat"])
+
+    avg_by_series: dict[str, float] = {
+        r[SERIES_ID]: float(r["m"] or 0.0)
+        for r in canonical.group_by(SERIES_ID)
+        .agg(pl.col(TARGET).mean().alias("m"))
+        .iter_rows(named=True)
+    }
 
     rows = []
     for series_id, profile in profiles.items():
@@ -405,6 +434,8 @@ def prepare(dataset_id: str) -> dict:
                 profile.censored_periods,
                 1 if series_id in forecastable else 0,
                 excluded.get(series_id),
+                category_by_series.get(series_id),
+                avg_by_series.get(series_id),
             )
         )
 
@@ -412,8 +443,9 @@ def prepare(dataset_id: str) -> dict:
     db.execute_many(
         """INSERT INTO series_profiles
            (dataset_id, series_id, item_id, location_id, adi, cv2, demand_class,
-            n_obs, n_nonzero, censored_periods, forecastable, exclusion_reason)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            n_obs, n_nonzero, censored_periods, forecastable, exclusion_reason,
+            category, avg_demand)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
 
@@ -483,7 +515,7 @@ def run_forecast(
             )
 
     progress(5, "preparing data")
-    canonical, frequency, _ = _load_canonical(dataset_id)
+    canonical, frequency, _, _ = _load_canonical(dataset_id)
     canonical, censored_counts = censoring.detect(canonical)
 
     profile_rows = db.query(
@@ -692,7 +724,20 @@ def _timedelta(days: int):
 # ---------------------------------------------------------------- decisions
 
 def _params_for(dataset_id: str) -> BusinessParams:
-    return BusinessParams()
+    """Dataset-level parameters, for callers that do not resolve per series."""
+    resolved, _ = params_mod.resolve(dataset_id)
+    return resolved
+
+
+def _series_categories(dataset_id: str) -> dict[str, str]:
+    return {
+        r["series_id"]: r["category"]
+        for r in db.query(
+            "SELECT series_id, category FROM series_profiles WHERE dataset_id = ?",
+            (dataset_id,),
+        )
+        if r["category"]
+    }
 
 
 def build_recommendations(
@@ -720,17 +765,35 @@ def build_recommendations(
             r[SERIES_ID]: r["inv"] for r in latest.iter_rows(named=True) if r["inv"] is not None
         }
 
+    # Resolve parameters per series: series override, else category, else the
+    # dataset default. Loaded once — resolving per series would re-read the table
+    # 400 times for no reason.
+    param_store = params_mod.load_all(dataset_id)
+    categories = _series_categories(dataset_id)
+
     rows = []
     for series_id, point in forecasts.items():
+        series_params, assumed = params_mod.resolve(
+            dataset_id,
+            series_id=series_id,
+            category=categories.get(series_id),
+            cached=param_store,
+        )
         recommendation = reorder_mod.recommend(
             series_id=series_id,
             forecast=point,
-            params=params,
+            params=series_params,
             current_inventory=inventory_by_series.get(series_id),
             mode=mode,
             error_std=error_std.get(series_id),
             period_days=frequency.days,
         )
+        # Surface which numbers we were never given, rather than passing off a
+        # built-in default as the customer's own figure.
+        if assumed:
+            recommendation.missing_params.extend(
+                f for f in assumed if f not in recommendation.missing_params
+            )
         rows.append(
             (
                 dataset_id,
@@ -901,7 +964,7 @@ def model_mix(dataset_id: str) -> dict[str, float]:
 
 
 def get_recommendations(dataset_id: str, limit: int = 50, risk: str | None = None) -> list[dict]:
-    sql = """SELECT r.*, s.item_id, s.location_id, s.demand_class,
+    sql = """SELECT r.*, s.item_id, s.location_id, s.demand_class, s.category,
                     m.model_name, m.wape, m.mase, m.reason
              FROM recommendations r
              LEFT JOIN series_profiles s

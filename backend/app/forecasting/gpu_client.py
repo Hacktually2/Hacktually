@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -61,6 +62,10 @@ def _max_workers() -> int:
 
 def _max_context() -> int:
     return int(os.getenv("GPU_MAX_CONTEXT", "2048"))
+
+
+def _retries() -> int:
+    return int(os.getenv("GPU_RETRIES", "2"))
 
 
 def _probe_timeout() -> float:
@@ -117,18 +122,38 @@ def forecast_one(model: str, values: list[float] | np.ndarray, horizon: int) -> 
     if cached is not None:
         return cached
 
-    response = _get_client().post(
-        "/v1/forecast",
-        json={
-            "model": model,
-            "values": [float(v) for v in series],
-            "horizon": int(horizon),
-        },
-    )
-    response.raise_for_status()
-    payload = response.json()
-    _cache_write(key, payload)
-    return payload
+    body = {
+        "model": model,
+        "values": [float(v) for v in series],
+        "horizon": int(horizon),
+    }
+
+    # Retry transient transport failures. A tunnel drops idle keep-alive
+    # connections, so a pooled socket can be dead by the time we reuse it and
+    # the first write fails with "server disconnected without sending a
+    # response". That is not the model being down, and treating it as such is
+    # how a working GPU service disappears from the model mix mid-demo.
+    last: Exception | None = None
+    for attempt in range(_retries() + 1):
+        try:
+            response = _get_client().post("/v1/forecast", json=body)
+            response.raise_for_status()
+            payload = response.json()
+            _cache_write(key, payload)
+            return payload
+        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError) as exc:
+            last = exc
+            close()  # drop the pool; the next attempt dials fresh
+            if attempt < _retries():
+                time.sleep(0.25 * (attempt + 1))
+        except httpx.HTTPStatusError as exc:
+            # 5xx from the tunnel is worth one retry; 4xx is our fault.
+            last = exc
+            if exc.response.status_code < 500 or attempt >= _retries():
+                raise
+            time.sleep(0.5 * (attempt + 1))
+
+    raise last if last else RuntimeError("forecast failed")
 
 
 # ---------------------------------------------------------------- disk cache

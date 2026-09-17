@@ -30,16 +30,22 @@ from app.services import pipeline_service as svc  # noqa: E402
 MAX_ROWS = 20
 
 try:
-    from mcp.server.fastmcp import FastMCP
+    # MCP 2.x renamed FastMCP to MCPServer. Import the new name first and fall
+    # back to the old one, so this runs on whichever SDK version is installed
+    # rather than failing at the worst possible moment.
+    from mcp.server.mcpserver import MCPServer as _Server
 except ImportError:  # pragma: no cover
-    print(
-        "MCP SDK not installed. Run: pip install mcp\n"
-        "The REST API works without it — MCP is an interface, not a dependency.",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
+    try:
+        from mcp.server.fastmcp import FastMCP as _Server  # type: ignore
+    except ImportError:
+        print(
+            "MCP SDK not installed. Run: pip install mcp\n"
+            "The REST API works without it — MCP is an interface, not a dependency.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
-mcp = FastMCP("adaptive-forecasting")
+mcp = _Server("adaptive-forecasting")
 
 
 def _latest_dataset() -> str | None:

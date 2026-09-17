@@ -9,6 +9,7 @@ from __future__ import annotations
 import polars as pl
 
 from ..canonical import SERIES_ID, TARGET, TIMESTAMP, Frequency
+from . import lifecycle
 from .pipeline import CleaningReport
 
 # A series needs enough history for two backtest windows plus a horizon.
@@ -16,45 +17,67 @@ MIN_OBS = {Frequency.DAILY: 60, Frequency.WEEKLY: 26, Frequency.MONTHLY: 18}
 MAX_ZERO_RATIO = 0.95
 
 
+
 def assess_series(
-    df: pl.DataFrame, frequency: Frequency
-) -> tuple[list[str], list[dict]]:
-    """Split series into forecastable and excluded-with-a-reason."""
+    df: pl.DataFrame,
+    frequency: Frequency,
+    adi_by_series: dict[str, float] | None = None,
+) -> tuple[list[str], list[dict], dict]:
+    """Split series by lifecycle state, not by row count.
+
+    Returns (forecastable_ids, excluded, lifecycle_detail). Seasonal and slow
+    items stay forecastable on purpose — a Lebaran-only SKU is quiet for nine
+    months and is precisely the item worth forecasting.
+    """
     min_obs = MIN_OBS[frequency]
-    stats = df.group_by(SERIES_ID).agg(
-        pl.len().alias("n_obs"),
-        (pl.col(TARGET) > 0).sum().alias("n_nonzero"),
-        pl.col(TARGET).sum().alias("total"),
-    )
+    verdicts = lifecycle.classify_all(df, frequency, adi_by_series, min_obs)
 
     forecastable: list[str] = []
     excluded: list[dict] = []
-    for row in stats.iter_rows(named=True):
-        series_id = row[SERIES_ID]
-        n_obs, n_nonzero, total = row["n_obs"], row["n_nonzero"], row["total"]
 
-        if n_obs < min_obs:
-            excluded.append({
-                "series_id": series_id,
-                "reason": f"only {n_obs} periods of history, need {min_obs}",
-                "fix": "export a longer date range for this item",
-            })
-        elif total <= 0:
-            excluded.append({
-                "series_id": series_id,
-                "reason": "no demand recorded in the whole period",
-                "fix": "confirm this item is still active",
-            })
-        elif n_nonzero / n_obs < (1 - MAX_ZERO_RATIO):
-            excluded.append({
-                "series_id": series_id,
-                "reason": f"demand in only {n_nonzero} of {n_obs} periods",
-                "fix": "forecast this item at a coarser frequency, or order to policy",
-            })
-        else:
+    for series_id, verdict in verdicts.items():
+        if verdict.state.forecastable:
             forecastable.append(series_id)
+        else:
+            excluded.append({
+                "series_id": series_id,
+                "state": verdict.state.value,
+                "reason": verdict.reason,
+                "fix": verdict.fix,
+            })
 
-    return forecastable, excluded
+    # Sparsity is orthogonal to lifecycle: an item can be alive and still be too
+    # sparse to forecast at this frequency.
+    sparse_cut = 1 - MAX_ZERO_RATIO
+    stats = df.group_by(SERIES_ID).agg(
+        pl.len().alias("n_obs"),
+        (pl.col(TARGET) > 0).sum().alias("n_nonzero"),
+    )
+    sparse = {
+        r[SERIES_ID]: (r["n_obs"], r["n_nonzero"])
+        for r in stats.iter_rows(named=True)
+        if r["n_obs"] and r["n_nonzero"] / r["n_obs"] < sparse_cut
+    }
+    if sparse:
+        still_ok = []
+        for series_id in forecastable:
+            if series_id in sparse:
+                n_obs, n_nonzero = sparse[series_id]
+                excluded.append({
+                    "series_id": series_id,
+                    "state": "too_sparse",
+                    "reason": f"demand in only {n_nonzero} of {n_obs} periods",
+                    "fix": "forecast at a coarser frequency, or order to policy",
+                })
+            else:
+                still_ok.append(series_id)
+        forecastable = still_ok
+
+    detail = {
+        "states": lifecycle.summary(verdicts),
+        "dead_stock": lifecycle.dead_stock(df, verdicts),
+    }
+    return forecastable, excluded, detail
 
 
 def health_score(report: CleaningReport, n_forecastable: int, n_total: int) -> int:
@@ -79,8 +102,9 @@ def build_report(
     df: pl.DataFrame,
     cleaning: CleaningReport,
     frequency: Frequency,
+    adi_by_series: dict[str, float] | None = None,
 ) -> dict:
-    forecastable, excluded = assess_series(df, frequency)
+    forecastable, excluded, lifecycle_detail = assess_series(df, frequency, adi_by_series)
     n_total = cleaning.series_total or df.get_column(SERIES_ID).n_unique()
     score = health_score(cleaning, len(forecastable), n_total)
 
@@ -110,6 +134,47 @@ def build_report(
             "level": "error",
             "text": f"{cleaning.unparseable_timestamps} rows had an unreadable date and were dropped",
         })
+    states = lifecycle_detail["states"]
+    if states.get("seasonal_dormant"):
+        findings.append({
+            "level": "ok",
+            "text": (
+                f"{states['seasonal_dormant']} series are seasonally dormant, not dead — "
+                "kept in the forecast"
+            ),
+        })
+    if states.get("slow_mover"):
+        findings.append({
+            "level": "ok",
+            "text": f"{states['slow_mover']} slow movers kept, judged against their own rhythm",
+        })
+    if states.get("discontinued"):
+        findings.append({
+            "level": "warn",
+            "text": f"{states['discontinued']} series look discontinued and were excluded",
+        })
+    if states.get("at_risk"):
+        findings.append({
+            "level": "warn",
+            "text": f"{states['at_risk']} series are quiet longer than expected — low confidence",
+        })
+
+    dead = lifecycle_detail["dead_stock"]
+    if dead["count"]:
+        if dead["valued"]:
+            findings.append({
+                "level": "warn",
+                "text": (
+                    f"{dead['count']} dormant items still hold stock worth "
+                    f"Rp {dead['total_value']:,.0f}"
+                ),
+            })
+        else:
+            findings.append({
+                "level": "warn",
+                "text": f"{dead['count']} dormant items still hold {dead['total_units']:,.0f} units",
+            })
+
     if excluded:
         findings.append({
             "level": "warn",
@@ -136,5 +201,7 @@ def build_report(
         "series_excluded_count": len(excluded),
         "findings": findings,
         "cleaning": cleaning.as_dict(),
+        "lifecycle": lifecycle_detail["states"],
+        "dead_stock": lifecycle_detail["dead_stock"],
         "forecastable_ids": forecastable,
     }

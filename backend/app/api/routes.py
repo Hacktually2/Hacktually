@@ -9,12 +9,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from ..canonical import DecisionMode
 from ..db import database as db
+from ..decision import params as params_mod
 from ..integrations import slack
+from ..services import export_service
 from ..services import pipeline_service as svc
 
 router = APIRouter(prefix="/api/v1")
@@ -123,6 +125,41 @@ def get_hierarchy(dataset_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="no hierarchy yet — run a forecast first")
     return result
+
+
+class ParamEntry(BaseModel):
+    scope: str = "category"
+    scope_value: str = ""
+    values: dict[str, float] = {}
+
+
+class ParamsRequest(BaseModel):
+    entries: list[ParamEntry]
+
+
+@router.get("/datasets/{dataset_id}/params")
+def get_params(dataset_id: str):
+    """What is set, and what still has to be asked for.
+
+    Lead time, MOQ and service level are commercial terms — they are not in a
+    sales export, so we ask rather than guess.
+    """
+    return {
+        "dataset_id": dataset_id,
+        "current": params_mod.load_all(dataset_id),
+        "suggested": params_mod.suggest(dataset_id),
+    }
+
+
+@router.put("/datasets/{dataset_id}/params")
+def set_params(dataset_id: str, body: ParamsRequest):
+    """Bulk apply. One call sets every category at once."""
+    try:
+        return params_mod.set_many(
+            dataset_id, [entry.model_dump() for entry in body.entries]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/datasets/{dataset_id}/health")
@@ -236,6 +273,34 @@ def get_value(dataset_id: str):
 def get_usage(dataset_id: str):
     """Metering. LAMPU bills on consumption, so we count what we would bill."""
     return svc.get_usage(dataset_id)
+
+
+@router.get("/export/{dataset_id}/{kind}")
+def export_csv(dataset_id: str, kind: str, delimiter: str = ";"):
+    """Download results as CSV.
+
+    Default delimiter is ';' because Excel on an Indonesian locale reads that,
+    not ','. Pass delimiter=, for pandas and friends.
+    """
+    if kind not in export_service.EXPORTS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown export '{kind}'. Available: {', '.join(export_service.EXPORTS)}",
+        )
+    if delimiter not in (",", ";", "\t"):
+        raise HTTPException(status_code=422, detail="delimiter must be one of , ; \\t")
+
+    try:
+        body = export_service.EXPORTS[kind](dataset_id, delimiter=delimiter)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+
+    name = export_service.filename(dataset_id, kind.replace("-", "_"))
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @router.post("/alerts/slack")

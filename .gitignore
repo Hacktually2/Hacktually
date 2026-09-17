@@ -58,3 +58,7 @@ data/app.db*
 data/uploads/
 data/demo/
 .env
+
+# large third-party dataset pack (see real_dataset/README.md for how to re-fetch)
+/real_dataset/
+/real_dataset.zip
