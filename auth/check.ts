@@ -93,6 +93,27 @@ check("the owner may open every branch dashboard, a stranger none", () => {
   );
 });
 
+check("the assistant's location scope follows branch access", () => {
+  const budi = db.findUserByEmail("budi.santoso@gmail.com")!;
+  const jakarta = db.listBranches(demo.project_id).find((b) => b.code === "CAB-JKT-01")!;
+
+  // Owner: every branch claiming the project.
+  assert.deepEqual(db.accessibleLocations(demoOwner.id, "prj-abc").sort(), ["CAB-JKT-01"]);
+  // Manager with no grant: claimed, but nothing allowed. Empty, NOT null —
+  // null would mean "unrestricted" and hand the assistant every branch.
+  assert.deepEqual(db.accessibleLocations(budi.id, "prj-abc"), []);
+
+  db.grantAccess(budi.id, jakarta.id, demoOwner.id);
+  assert.deepEqual(db.accessibleLocations(budi.id, "prj-abc"), ["CAB-JKT-01"]);
+  db.revokeAccess(budi.id, jakarta.id);
+});
+
+check("a forecasting project no branch claims is unrestricted, not empty", () => {
+  // null and [] are different answers: null lets the assistant read everything,
+  // [] lets it read nothing. Confusing them either leaks or breaks.
+  assert.equal(db.accessibleLocations(demoOwner.id, "prj-orphan"), null);
+});
+
 check("an unclaimed forecasting project stays visible to everyone", () => {
   // Nothing in this layer claims it, so it is not this layer's to refuse.
   const budi = db.findUserByEmail("budi.santoso@gmail.com")!;
