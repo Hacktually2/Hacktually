@@ -12,23 +12,34 @@ import type { SeriesPoint } from "@/app/dummy-data/types";
  * keep their true thickness via vector-effect="non-scaling-stroke".
  */
 
-export interface ProjectedPoint {
-  /** 0–100 across the plot. */
-  x: number;
-  t: string;
-  actual: number | null;
-  forecast: number | null;
-  lower: number | null;
-  upper: number | null;
-  sales: number | null;
-  /** 0–100 down the plot, already flipped so 0 is the top. */
-  yActual: number | null;
-  yForecast: number | null;
-  ySales: number | null;
+/**
+ * Hover data, stored columnar rather than as an array of points.
+ *
+ * This is the one structure that crosses to the client, and as an array of
+ * objects every key name was re-serialised per point: at 150 points that is
+ * ~9kb of the strings "forecast", "yActual" and friends repeated. One array per
+ * field costs each key once.
+ *
+ * `x` is not stored at all. The axis is uniformly spaced, so position is
+ * `index / (count - 1) * 100` and the client derives it.
+ */
+export interface HoverData {
+  count: number;
+  t: string[];
+  actual: (number | null)[];
+  forecast: (number | null)[];
+  lower: (number | null)[];
+  upper: (number | null)[];
+  yActual: (number | null)[];
+  yForecast: (number | null)[];
+  /** Present only when the sales series is being drawn. */
+  sales?: (number | null)[];
+  ySales?: (number | null)[];
 }
 
 export interface ChartGeometry {
-  points: ProjectedPoint[];
+  /** Only built when the chart is interactive; nothing else consumes it. */
+  hover: HoverData | null;
   /** Polyline path for the observed portion. */
   actualPath: string;
   /** Polyline path for the predicted portion. */
@@ -67,9 +78,20 @@ function niceStep(peak: number, ticks: number): number {
 export function projectSeries(
   points: SeriesPoint[],
   cutoffIndex: number,
-  options: { xTickCount?: number; yTickCount?: number; includeSales?: boolean } = {}
+  options: {
+    xTickCount?: number;
+    yTickCount?: number;
+    includeSales?: boolean;
+    /** Build the hover columns. Skipped for static charts, which never use them. */
+    interactive?: boolean;
+  } = {}
 ): ChartGeometry {
-  const { xTickCount = 6, yTickCount = 5, includeSales = false } = options;
+  const {
+    xTickCount = 6,
+    yTickCount = 5,
+    includeSales = false,
+    interactive = false,
+  } = options;
   const n = points.length;
 
   let peak = 0;
@@ -87,48 +109,90 @@ export function projectSeries(
   // Demand is a volume, so the axis is anchored at zero rather than cropped.
   const toY = (v: number) => 100 - (v / max) * 100;
   const toX = (i: number) => (n === 1 ? 0 : (i / (n - 1)) * 100);
+  // Two decimals is finer than a physical pixel at any realistic chart width,
+  // and keeps each number short in the payload that crosses to the client.
+  const r2 = (v: number) => Math.round(v * 100) / 100;
 
-  const projected: ProjectedPoint[] = points.map((p, i) => ({
-    x: toX(i),
-    t: p.t,
-    actual: p.actual,
-    forecast: p.forecast,
-    lower: p.lower,
-    upper: p.upper,
-    sales: p.sales ?? null,
-    yActual: p.actual === null ? null : toY(p.actual),
-    yForecast: p.forecast === null ? null : toY(p.forecast),
-    ySales: p.sales == null ? null : toY(p.sales),
-  }));
-
-  const line = (key: "yActual" | "yForecast" | "ySales") => {
-    const segments: string[] = [];
-    let open = false;
-    for (const p of projected) {
-      const y = p[key];
-      if (y === null) {
-        open = false;
-        continue;
+  // One pass builds every path and, when asked, the hover columns. The previous
+  // version materialised an intermediate array of point objects and then walked
+  // it three more times.
+  const hover: HoverData | null = interactive
+    ? {
+        count: n,
+        t: [],
+        actual: [],
+        forecast: [],
+        lower: [],
+        upper: [],
+        yActual: [],
+        yForecast: [],
+        ...(includeSales ? { sales: [], ySales: [] } : {}),
       }
-      segments.push(`${open ? "L" : "M"}${p.x.toFixed(3)},${y.toFixed(3)}`);
-      open = true;
-    }
-    return segments.join(" ");
-  };
+    : null;
 
-  // Uncertainty band: forward along the upper quantile, back along the lower.
-  const withBand = projected.filter((p) => p.lower !== null && p.upper !== null);
-  let bandPath: string | null = null;
-  if (withBand.length > 1) {
-    const top = withBand
-      .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(3)},${toY(p.upper!).toFixed(3)}`)
-      .join(" ");
-    const bottom = [...withBand]
-      .reverse()
-      .map((p) => `L${p.x.toFixed(3)},${toY(p.lower!).toFixed(3)}`)
-      .join(" ");
-    bandPath = `${top} ${bottom} Z`;
+  const actualSeg: string[] = [];
+  const forecastSeg: string[] = [];
+  const salesSeg: string[] = [];
+  let actualOpen = false;
+  let forecastOpen = false;
+  let salesOpen = false;
+  const bandTop: string[] = [];
+  const bandBottom: string[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const p = points[i];
+    const x = toX(i);
+    const xs = x.toFixed(3);
+    const sales = p.sales ?? null;
+
+    if (p.actual === null) {
+      actualOpen = false;
+    } else {
+      actualSeg.push(`${actualOpen ? "L" : "M"}${xs},${toY(p.actual).toFixed(3)}`);
+      actualOpen = true;
+    }
+
+    if (p.forecast === null) {
+      forecastOpen = false;
+    } else {
+      forecastSeg.push(`${forecastOpen ? "L" : "M"}${xs},${toY(p.forecast).toFixed(3)}`);
+      forecastOpen = true;
+    }
+
+    if (includeSales) {
+      if (sales === null) {
+        salesOpen = false;
+      } else {
+        salesSeg.push(`${salesOpen ? "L" : "M"}${xs},${toY(sales).toFixed(3)}`);
+        salesOpen = true;
+      }
+    }
+
+    if (p.lower !== null && p.upper !== null) {
+      bandTop.push(`${bandTop.length === 0 ? "M" : "L"}${xs},${toY(p.upper).toFixed(3)}`);
+      // Collected forward, emitted in reverse to close the polygon.
+      bandBottom.push(`L${xs},${toY(p.lower).toFixed(3)}`);
+    }
+
+    if (hover) {
+      hover.t.push(p.t);
+      hover.actual.push(p.actual);
+      hover.forecast.push(p.forecast);
+      hover.lower.push(p.lower);
+      hover.upper.push(p.upper);
+      hover.yActual.push(p.actual === null ? null : r2(toY(p.actual)));
+      hover.yForecast.push(p.forecast === null ? null : r2(toY(p.forecast)));
+      if (hover.sales && hover.ySales) {
+        hover.sales.push(sales);
+        hover.ySales.push(sales === null ? null : r2(toY(sales)));
+      }
+    }
   }
+
+  const bandPath =
+    bandTop.length > 1
+      ? `${bandTop.join(" ")} ${bandBottom.reverse().join(" ")} Z`
+      : null;
 
   const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) => ({
     value: step * i,
@@ -138,7 +202,7 @@ export function projectSeries(
   const tickEvery = Math.max(1, Math.round((n - 1) / (xTickCount - 1)));
   const xTicks: { label: string; x: number }[] = [];
   for (let i = 0; i < n; i += tickEvery) {
-    xTicks.push({ label: points[i].t, x: toX(i) });
+    xTicks.push({ label: points[i].t, x: r2(toX(i)) });
   }
   // Always anchor the right edge so the forecast end date is visible.
   if (xTicks[xTicks.length - 1]?.x < 99) {
@@ -146,12 +210,12 @@ export function projectSeries(
   }
 
   return {
-    points: projected,
-    actualPath: line("yActual"),
-    forecastPath: line("yForecast"),
-    salesPath: includeSales ? line("ySales") || null : null,
+    hover,
+    actualPath: actualSeg.join(" "),
+    forecastPath: forecastSeg.join(" "),
+    salesPath: includeSales ? salesSeg.join(" ") || null : null,
     bandPath,
-    cutoffX: toX(cutoffIndex),
+    cutoffX: r2(toX(cutoffIndex)),
     yTicks,
     xTicks,
     max,

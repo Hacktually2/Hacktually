@@ -226,7 +226,7 @@ function DetailDrawer({ row, onClose }: { row: InventoryRow; onClose: () => void
   return (
     <>
       <div
-        className="animate-enter-backdrop fixed inset-0 z-[var(--z-drawer)] bg-brand-deep/15"
+        className="animate-enter-backdrop fixed inset-0 z-[var(--z-drawer)] bg-surface-brand/30"
         onClick={onClose}
         aria-hidden="true"
       />

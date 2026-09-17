@@ -64,7 +64,7 @@ export default function NewProjectPage() {
                   key={p}
                   className="flex items-center gap-1.5 rounded-full border border-border-subtle px-2.5 py-1 text-meta font-medium text-ink-secondary"
                 >
-                  <Check size={13} className="text-brand-blue" />
+                  <Check size={13} className="text-brand-blue-ink" />
                   {p}
                 </li>
               ))}
@@ -72,7 +72,7 @@ export default function NewProjectPage() {
           </Panel>
 
           <div className="flex gap-3 rounded-md border border-border-subtle bg-surface-card px-4 py-3.5">
-            <Info size={17} className="mt-0.5 shrink-0 text-brand-blue" />
+            <Info size={17} className="mt-0.5 shrink-0 text-brand-blue-ink" />
             <p className="text-body-sm leading-relaxed text-ink-secondary">
               At least 18 months of history gives the most reliable seasonality, including the
               Lebaran shift. Shorter histories still forecast, with wider intervals.

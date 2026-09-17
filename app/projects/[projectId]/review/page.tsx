@@ -34,7 +34,7 @@ export default async function ReviewPage({ params }: PageProps<"/projects/[proje
 
       {mapping.preset_matched && (
         <p className="mt-6 flex items-start gap-2.5 rounded-md border border-brand-blue/20 bg-brand-blue-soft px-4 py-3 text-body-sm text-brand-deep">
-          <Check size={16} className="mt-0.5 shrink-0 text-brand-blue" />
+          <Check size={16} className="mt-0.5 shrink-0 text-brand-blue-ink" />
           <span>
             Recognised as <strong className="font-semibold">{mapping.preset_matched}</strong>.
             Most columns mapped without inference.

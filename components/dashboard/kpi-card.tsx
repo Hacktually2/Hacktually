@@ -53,7 +53,7 @@ export function KpiCard({ kpi }: { kpi: KpiMetric }) {
       )}
 
       {kpi.href && (
-        <span className="mt-3 flex items-center gap-1 text-meta font-semibold text-brand-blue">
+        <span className="mt-3 flex items-center gap-1 text-meta font-semibold text-brand-blue-ink">
           View detail
           <ArrowRight
             size={13}

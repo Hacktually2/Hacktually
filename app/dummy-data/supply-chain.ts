@@ -7,6 +7,13 @@ export const SUPPLY_CHAIN: SupplyChainResponse = {
   generated_at: "2026-09-17T13:42:00+07:00",
   mode: "ritel",
   rows: INVENTORY_ROWS,
+  headline: {
+    attention_count: 5,
+    total_count: 18,
+    units_to_order: 17300,
+    detail:
+      "Kacang Garuda 200g is the most urgent, with 7 days of cover against a 14-day lead time.",
+  },
   summary: [...RISK_SUMMARY],
   filters: {
     locations: [

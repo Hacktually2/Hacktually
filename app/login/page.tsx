@@ -2,13 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Wordmark } from "@/components/marketing/site-chrome";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Check } from "@/components/ui/icons";
 import { getSession } from "@/lib/session";
 import { DEMO_ACCOUNTS } from "@/app/dummy-data/accounts";
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = {
-  title: "Sign in — Hacktually",
+  title: "Sign in",
   description: "Sign in to your forecasting workspace.",
 };
 
@@ -20,9 +21,12 @@ export default async function LoginPage() {
     <main className="flex flex-1 flex-col lg:grid lg:grid-cols-2">
       <div className="flex flex-1 items-center justify-center px-6 py-12">
         <div className="w-full max-w-sm animate-enter">
-          <Link href="/" aria-label="Hacktually home">
-            <Wordmark />
-          </Link>
+          <div className="flex items-center justify-between gap-4">
+            <Link href="/" aria-label="DemandX home">
+              <Wordmark priority />
+            </Link>
+            <ThemeToggle />
+          </div>
           <h1 className="mt-10 text-page font-bold text-brand-deep">Sign in</h1>
           <p className="mt-1.5 mb-8 text-body text-ink-secondary">
             Access your forecasting workspace and current inventory position.
@@ -40,7 +44,7 @@ export default async function LoginPage() {
 
       {/* Context panel — what is behind the door, stated plainly. */}
       <aside className="hidden animate-enter border-l border-border-subtle bg-surface-card [--enter-delay:120ms] lg:flex lg:flex-col lg:justify-center lg:px-16">
-        <p className="text-meta font-semibold tracking-[0.12em] text-brand-blue uppercase">
+        <p className="text-meta font-semibold tracking-[0.12em] text-brand-blue-ink uppercase">
           Inside the workspace
         </p>
         <h2 className="mt-3 max-w-md text-display font-bold tracking-tight text-brand-deep">
@@ -62,7 +66,7 @@ export default async function LoginPage() {
             },
           ].map((item) => (
             <li key={item.t} className="flex gap-3">
-              <Check size={18} className="mt-0.5 shrink-0 text-brand-blue" />
+              <Check size={18} className="mt-0.5 shrink-0 text-brand-blue-ink" />
               <div>
                 <p className="text-body font-semibold text-brand-deep">{item.t}</p>
                 <p className="mt-0.5 text-body-sm leading-relaxed text-ink-secondary">{item.d}</p>

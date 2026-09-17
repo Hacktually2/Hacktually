@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import type { CSSProperties, ReactNode } from "react";
 import { ForecastChart } from "@/components/charts/forecast-chart";
 import { Reveal, RevealNoScriptFallback } from "@/components/marketing/reveal";
@@ -11,7 +12,7 @@ import { DEMAND } from "./dummy-data/demand";
 import { OVERVIEW } from "./dummy-data/overview";
 
 export const metadata: Metadata = {
-  title: "Hacktually · Demand forecasting for manufaktur & ritel",
+  title: "DemandX · Demand forecasting for manufaktur & ritel",
   description:
     "Upload the CSV your ERP already produces. Get a validated forecast and a ranked list of what to reorder.",
 };
@@ -62,12 +63,29 @@ const READS = ["Accurate", "Jubelio", "HashMicro", "SimpliDOTS", "Moka"];
 function Hero({ signedIn }: { signedIn: boolean }) {
   return (
     <section className="relative isolate overflow-hidden">
-      {/* Faint engineering grid, masked so it dissolves into the page. */}
+      {/* Two background layers: a photograph for atmosphere and a grid for
+          structure. Both sit behind the content and neither is decorative
+          enough to compete with it. */}
+      <div className="pointer-events-none absolute inset-0 -z-20 overflow-hidden" aria-hidden="true">
+        {/* Not `priority`: at 9% opacity behind a headline, this is texture.
+            Preloading it would make it compete with the font and the text for
+            the first bytes, to fix something nobody can see arrive late.
+            `sizes` caps the requested width because the source is only 1056px
+            wide, and the low quality is free at this opacity. */}
+        <Image
+          src="/herobuildings.webp"
+          alt=""
+          fill
+          sizes="(max-width: 768px) 100vw, 1100px"
+          quality={40}
+          className="hero-photo object-cover object-center"
+        />
+      </div>
       <div className="hero-grid pointer-events-none absolute inset-0 -z-10" aria-hidden="true" />
 
       <div className="layout-shell pt-16 pb-14 md:pt-24">
         <div className="max-w-3xl">
-          <p className="animate-enter inline-flex items-center rounded-full border border-brand-blue/25 bg-brand-blue-soft px-3 py-1 text-meta font-semibold tracking-[0.1em] text-brand-blue uppercase">
+          <p className="animate-enter inline-flex items-center rounded-full border border-brand-blue/25 bg-brand-blue-soft px-3 py-1 text-meta font-semibold tracking-[0.1em] text-brand-blue-ink uppercase">
             Demand forecasting · Manufaktur &amp; Ritel
           </p>
 
@@ -241,7 +259,7 @@ function Platform() {
         {capabilities.map((c, i) => (
           <Reveal key={c.title} delay={i * 110} as="article" className="h-full">
             <article className="surface-card flex h-full flex-col p-6">
-              <c.Icon size={22} className="text-brand-blue" />
+              <c.Icon size={22} className="text-brand-blue-ink" />
               <h3 className="mt-4 text-section font-semibold text-brand-deep">{c.title}</h3>
               <p className="mt-2 text-body leading-relaxed text-ink-secondary">{c.body}</p>
               <ul className="mt-4 space-y-2 border-t border-border-subtle pt-4">
@@ -292,7 +310,7 @@ function Workflow() {
           {steps.map((s, i) => (
             <Reveal key={s.n} delay={i * 80} as="li" className="bg-surface-card">
               <div className="p-5">
-                <p className="text-meta font-bold tracking-wider text-brand-blue">{s.n}</p>
+                <p className="text-meta font-bold tracking-wider text-brand-blue-ink">{s.n}</p>
                 <h3 className="mt-2 text-body font-semibold text-brand-deep">{s.title}</h3>
                 <p className="mt-1 text-body-sm leading-relaxed text-ink-secondary">{s.body}</p>
               </div>
@@ -424,7 +442,7 @@ function ClosingCta({ signedIn }: { signedIn: boolean }) {
   return (
     <section className="layout-shell py-20">
       <Reveal>
-        <div className="relative isolate overflow-hidden rounded-xl bg-brand-deep px-8 py-14 md:px-14 md:py-20">
+        <div className="relative isolate overflow-hidden rounded-xl bg-surface-brand px-8 py-14 md:px-14 md:py-20">
           {/* One soft light source, well under the threshold where it would
               read as a glowing blob (design.md §15). */}
           <div
@@ -499,7 +517,7 @@ function SectionHeading({
 }) {
   return (
     <div className={align === "center" ? "mx-auto max-w-2xl text-center" : "max-w-xl"}>
-      <p className="text-meta font-semibold tracking-[0.12em] text-brand-blue uppercase">
+      <p className="text-meta font-semibold tracking-[0.12em] text-brand-blue-ink uppercase">
         {eyebrow}
       </p>
       <h2 className="mt-3 text-page font-bold tracking-tight text-brand-deep md:text-display">

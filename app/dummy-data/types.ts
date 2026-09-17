@@ -324,6 +324,16 @@ export interface SupplyChainResponse {
   generated_at: string;
   mode: "ritel" | "manufaktur";
   rows: InventoryRow[];
+  /**
+   * The one sentence the page leads with. Phrased by the backend so the
+   * frontend never has to decide what counts as "needing attention".
+   */
+  headline: {
+    attention_count: number;
+    total_count: number;
+    units_to_order: number;
+    detail: string;
+  };
   summary: {
     risk: RiskLevel;
     label: string;
@@ -359,4 +369,142 @@ export interface Session {
   role: string;
   organisation: string;
   initials: string;
+}
+
+/* ---------------------------------------------------------------- activity */
+
+export type ActivityKind =
+  | "dataset_uploaded"
+  | "dataset_updated"
+  | "mapping_confirmed"
+  | "forecast_generated"
+  | "health_changed"
+  | "recommendations_refreshed";
+
+/**
+ * One entry in the data-change log.
+ *
+ * Only events that changed the data or the results belong here. Navigation,
+ * filtering and sorting do not, because the log exists to answer "why do the
+ * numbers look different from yesterday".
+ *
+ * NEEDS-ENDPOINT: GET /api/v1/activity?project_id=
+ */
+export interface ActivityEvent {
+  event_id: string;
+  kind: ActivityKind;
+  project_id: string;
+  project_name: string;
+  organisation: string;
+  /** ISO-8601 with offset. */
+  at: string;
+  actor: string;
+  summary: string;
+  /** Short factual lines, already phrased by the backend. */
+  details: string[];
+}
+
+/* ------------------------------------------------------------ data updates */
+
+/**
+ * Dry-run result of merging a newer export into an existing dataset.
+ *
+ * The merge key is the canonical (timestamp, series_id) pair. Rows present in
+ * both files are replaced by the incoming values; rows only in the existing
+ * dataset are kept. Nothing is deleted.
+ *
+ * NEEDS-ENDPOINT: POST /api/v1/datasets/{id}/append?dry_run=true
+ */
+export interface MergePreview {
+  dataset_id: string;
+  incoming_filename: string;
+  incoming_rows: number;
+  /** Rows whose (timestamp, series_id) is not already present. */
+  rows_added: number;
+  /** Rows that overlap and carry a different value, so they replace it. */
+  rows_updated: number;
+  /** Rows that overlap and match, so nothing changes. */
+  rows_unchanged: number;
+  /** Existing rows the incoming file does not mention. Always retained. */
+  rows_retained: number;
+  series_new: string[];
+  series_total_before: number;
+  series_total_after: number;
+  coverage_before: { from: string; to: string };
+  coverage_after: { from: string; to: string };
+  /** A sample of overlapping rows, so "updated" is inspectable, not asserted. */
+  conflicts: {
+    series_id: string;
+    item_name: string;
+    timestamp: string;
+    existing_value: number;
+    incoming_value: number;
+  }[];
+  warnings: {
+    id: string;
+    severity: "info" | "warning" | "critical";
+    title: string;
+    detail: string;
+  }[];
+  /** False when the file cannot be merged at all; `warnings` says why. */
+  mergeable: boolean;
+}
+
+/* --------------------------------------------------------------- scenarios */
+
+/**
+ * Inputs to a what-if run.
+ *
+ * Every lever maps onto a variable the decision engine already uses, so a
+ * scenario is the same engine run with different inputs rather than a second
+ * model that could disagree with the first.
+ *
+ * Capacity is in units, not rupiah: this dataset carries no unit cost, which is
+ * why Inventory Value reads "Unavailable". A rupiah budget would be invented.
+ */
+export interface ScenarioInput {
+  /** Multiplier on each item's replenishment lead time. */
+  lead_time_multiplier: number;
+  /** Multiplier on forecast demand, e.g. a bigger Lebaran than expected. */
+  demand_multiplier: number;
+  /** Target service level as a percentage; drives the safety factor. */
+  service_level: number;
+  /** Multiplier on each item's minimum order quantity. */
+  moq_multiplier: number;
+  /** Units orderable this cycle. null means unconstrained. */
+  capacity_units: number | null;
+}
+
+export interface ScenarioTotals {
+  units_to_order: number;
+  items_needing_order: number;
+  items_at_risk: number;
+  median_cover_days: number;
+}
+
+export interface ScenarioRow {
+  series_id: string;
+  item_name: string;
+  location: string;
+  risk_before: RiskLevel;
+  risk_after: RiskLevel;
+  qty_before: number;
+  qty_after: number;
+  cover_before: number;
+  cover_after: number;
+  lead_time_after: number;
+  /** Set when capacity ran out before this item was covered. */
+  deferred: boolean;
+}
+
+/** NEEDS-ENDPOINT: POST /api/v1/simulate/{dataset_id} */
+export interface ScenarioOutcome {
+  scenario: ScenarioInput;
+  baseline: ScenarioTotals;
+  simulated: ScenarioTotals;
+  /** Every item, ordered by how much the scenario changed it. */
+  rows: ScenarioRow[];
+  /** Backend-phrased observations. The frontend renders, never writes these. */
+  notes: string[];
+  capacity: { capped: boolean; deferred_items: number; unmet_units: number } | null;
 }

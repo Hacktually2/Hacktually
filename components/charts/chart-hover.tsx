@@ -1,34 +1,52 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDate, formatNumber } from "@/lib/format";
-import type { ProjectedPoint } from "./geometry";
+import type { HoverData } from "./geometry";
 
 /**
  * Hover readout for a chart (design.md §86: clean, compact, no heavy glass).
  *
- * The only client-side work in the chart. Coordinates are already projected on
- * the server, and because the x axis is uniformly spaced the nearest point is
- * an O(1) index calculation rather than a search. State holds a single integer,
- * so a pointer move re-renders the crosshair and tooltip only.
+ * The only client-side work in the chart. Coordinates are projected on the
+ * server and arrive as columns, and because the x axis is uniformly spaced the
+ * nearest point is an index calculation rather than a search.
+ *
+ * State is a single integer, so a pointer move re-renders the crosshair and the
+ * tooltip and nothing else.
  */
-export function ChartHoverLayer({
-  points,
-  unit,
-}: {
-  points: ProjectedPoint[];
-  unit: string;
-}) {
+export function ChartHoverLayer({ data, unit }: { data: HoverData; unit: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Reading getBoundingClientRect on every pointer move forces the browser to
+  // flush layout. The box only changes on resize or scroll, so it is measured
+  // once and re-measured on those instead.
+  const rect = useRef<DOMRect | null>(null);
   const [active, setActive] = useState<number | null>(null);
-  const last = points.length - 1;
+  const last = data.count - 1;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      rect.current = el.getBoundingClientRect();
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    window.addEventListener("scroll", measure, { passive: true });
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", measure);
+    };
+  }, []);
 
   const pick = useCallback(
     (clientX: number) => {
-      const rect = ref.current?.getBoundingClientRect();
-      if (!rect || rect.width === 0) return;
-      const ratio = (clientX - rect.left) / rect.width;
-      const index = Math.min(last, Math.max(0, Math.round(ratio * last)));
+      const box = rect.current;
+      if (!box || box.width === 0) return;
+      const index = Math.min(
+        last,
+        Math.max(0, Math.round(((clientX - box.left) / box.width) * last))
+      );
       setActive((current) => (current === index ? current : index));
     },
     [last]
@@ -46,7 +64,8 @@ export function ChartHoverLayer({
     [last]
   );
 
-  const point = active === null ? null : points[active];
+  const i = active;
+  const x = i === null || last === 0 ? 0 : (i / last) * 100;
 
   return (
     <div
@@ -61,56 +80,58 @@ export function ChartHoverLayer({
       role="application"
       aria-label="Chart values. Use the left and right arrow keys to read each period."
     >
-      {point && (
+      {i !== null && (
         <>
           <div
             className="pointer-events-none absolute inset-y-0 w-px bg-brand-deep/35"
-            style={{ left: `${point.x}%` }}
+            style={{ left: `${x}%` }}
           />
-          {point.yActual !== null && (
-            <Dot x={point.x} y={point.yActual} color="var(--color-series-actual)" />
+          {data.yActual[i] !== null && (
+            <Dot x={x} y={data.yActual[i]!} color="var(--color-series-actual)" />
           )}
-          {point.yForecast !== null && (
-            <Dot x={point.x} y={point.yForecast} color="var(--color-series-forecast)" />
+          {data.yForecast[i] !== null && (
+            <Dot x={x} y={data.yForecast[i]!} color="var(--color-series-forecast)" />
           )}
-          {point.ySales !== null && (
-            <Dot x={point.x} y={point.ySales} color="var(--color-series-sales)" />
+          {data.ySales?.[i] != null && (
+            <Dot x={x} y={data.ySales[i]!} color="var(--color-series-sales)" />
           )}
 
           <div
             className={`pointer-events-none absolute top-2 z-[var(--z-popover)] min-w-40 rounded-sm border border-border-subtle bg-surface-card p-3 shadow-card ${
-              point.x > 60 ? "-translate-x-[calc(100%+12px)]" : "translate-x-3"
+              x > 60 ? "-translate-x-[calc(100%+12px)]" : "translate-x-3"
             }`}
-            style={{ left: `${point.x}%` }}
+            style={{ left: `${x}%` }}
             role="status"
           >
-            <p className="text-meta font-semibold text-ink-tertiary">{formatDate(point.t)}</p>
+            <p className="text-meta font-semibold text-ink-tertiary">
+              {formatDate(data.t[i])}
+            </p>
             <dl className="mt-2 space-y-1.5">
-              {point.actual !== null && (
+              {data.actual[i] !== null && (
                 <Row
                   label="Actual"
-                  value={`${formatNumber(point.actual)} ${unit}`}
+                  value={`${formatNumber(data.actual[i]!)} ${unit}`}
                   color="var(--color-series-actual)"
                 />
               )}
-              {point.sales !== null && (
+              {data.sales?.[i] != null && (
                 <Row
                   label="Sales"
-                  value={`${formatNumber(point.sales)} ${unit}`}
+                  value={`${formatNumber(data.sales[i]!)} ${unit}`}
                   color="var(--color-series-sales)"
                 />
               )}
-              {point.forecast !== null && point.actual === null && (
+              {data.forecast[i] !== null && data.actual[i] === null && (
                 <>
                   <Row
                     label="Forecast"
-                    value={`${formatNumber(point.forecast)} ${unit}`}
+                    value={`${formatNumber(data.forecast[i]!)} ${unit}`}
                     color="var(--color-series-forecast)"
                   />
-                  {point.lower !== null && point.upper !== null && (
+                  {data.lower[i] !== null && data.upper[i] !== null && (
                     <Row
                       label="80% interval"
-                      value={`${formatNumber(point.lower)} – ${formatNumber(point.upper)}`}
+                      value={`${formatNumber(data.lower[i]!)} – ${formatNumber(data.upper[i]!)}`}
                       color="var(--color-series-band)"
                     />
                   )}
@@ -138,11 +159,7 @@ function Row({ label, value, color }: { label: string; value: string; color: str
   return (
     <div className="flex items-center justify-between gap-4">
       <dt className="flex items-center gap-1.5 text-meta text-ink-secondary">
-        <span
-          className="size-2 rounded-xs"
-          style={{ backgroundColor: color }}
-          aria-hidden="true"
-        />
+        <span className="size-2 rounded-xs" style={{ backgroundColor: color }} aria-hidden="true" />
         {label}
       </dt>
       <dd className="text-body-sm font-semibold text-ink" data-numeric>

@@ -1,27 +1,27 @@
 import Link from "next/link";
+import { Logo } from "@/components/brand/logo";
 import type { Session } from "@/app/dummy-data/types";
 import { ButtonLink } from "@/components/ui/button";
 import { ChevronDown } from "@/components/ui/icons";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
-/** Wordmark. Geometric, quiet, no glow. */
-export function Wordmark({ compact = false }: { compact?: boolean }) {
+/**
+ * Re-exported so the workspace header and login screen keep one import path for
+ * the brand. `compact` renders the badge alone, for tight chrome.
+ */
+export function Wordmark({
+  compact = false,
+  priority = false,
+}: {
+  compact?: boolean;
+  priority?: boolean;
+}) {
   return (
-    <span className="flex items-center gap-2.5">
-      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="var(--color-brand-deep)" />
-        <path
-          d="M6 16.5 10 11l3.2 3.4L18 7.5"
-          fill="none"
-          stroke="var(--color-brand-pale)"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-      {!compact && (
-        <span className="text-section font-bold tracking-tight text-brand-deep">Hacktually</span>
-      )}
-    </span>
+    <Logo
+      variant={compact ? "badge" : "full"}
+      height={compact ? 26 : 24}
+      priority={priority}
+    />
   );
 }
 
@@ -43,9 +43,9 @@ const NAV = [
 export function SiteHeader({ session }: { session: Session | null }) {
   return (
     <header className="glass-navigation sticky top-0 z-[var(--z-nav)]">
-      <div className="layout-shell flex h-14 items-center justify-between gap-6">
-        <Link href="/" className="shrink-0" aria-label="Hacktually home">
-          <Wordmark />
+      <div className="layout-shell flex h-14 items-center justify-between gap-3 sm:gap-6">
+        <Link href="/" className="shrink-0" aria-label="DemandX home">
+          <Wordmark priority />
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
@@ -61,13 +61,16 @@ export function SiteHeader({ session }: { session: Session | null }) {
         </nav>
 
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           {session ? (
             <>
               <span className="hidden text-body-sm text-ink-secondary lg:inline">
                 {session.organisation}
               </span>
               <ButtonLink href="/projects" size="sm">
-                Go to workspace
+                {/* The full label does not fit beside the logo on a phone. */}
+                <span className="sm:hidden">Workspace</span>
+                <span className="hidden sm:inline">Go to workspace</span>
               </ButtonLink>
             </>
           ) : (
@@ -76,7 +79,8 @@ export function SiteHeader({ session }: { session: Session | null }) {
                 Sign in
               </ButtonLink>
               <ButtonLink href="/login" size="sm">
-                Request a demo
+                <span className="sm:hidden">Demo</span>
+                <span className="hidden sm:inline">Request a demo</span>
               </ButtonLink>
             </>
           )}
@@ -90,7 +94,7 @@ export function SiteHeader({ session }: { session: Session | null }) {
               <ChevronDown size={18} />
             </summary>
             <nav
-              className="glass-overlay absolute right-0 z-[var(--z-popover)] mt-2 w-56 rounded-md p-2"
+              className="surface-popover absolute right-0 z-[var(--z-popover)] mt-2 w-56 max-w-[calc(100vw-2rem)] p-2"
               aria-label="Main"
             >
               {NAV.map((item) => (
@@ -146,7 +150,7 @@ export function SiteFooter() {
         />
       </div>
       <div className="layout-shell flex flex-col gap-2 border-t border-border-subtle py-5 text-meta text-ink-tertiary sm:flex-row sm:items-center sm:justify-between">
-        <p>© 2026 Hacktually. Data processed and stored in Indonesia.</p>
+        <p>© 2026 DemandX. Data processed and stored in Indonesia.</p>
         <p>Prototype build · figures shown are from a demonstration dataset.</p>
       </div>
     </footer>
@@ -170,7 +174,7 @@ function FooterColumn({
           <li key={l.label}>
             <Link
               href={l.href}
-              className="text-body-sm text-ink-secondary transition-colors duration-(--duration-fast) hover:text-brand-blue"
+              className="text-body-sm text-ink-secondary transition-colors duration-(--duration-fast) hover:text-brand-blue-ink"
             >
               {l.label}
             </Link>
