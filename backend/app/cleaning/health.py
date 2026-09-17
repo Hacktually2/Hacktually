@@ -10,6 +10,7 @@ import polars as pl
 
 from ..canonical import SERIES_ID, TARGET, TIMESTAMP, Frequency
 from . import lifecycle
+from ..enrich import censoring as censoring_mod
 from .pipeline import CleaningReport
 
 # A series needs enough history for two backtest windows plus a horizon.
@@ -76,6 +77,7 @@ def assess_series(
     detail = {
         "states": lifecycle.summary(verdicts),
         "dead_stock": lifecycle.dead_stock(df, verdicts),
+        "censoring": censoring_mod.method_for(df),
     }
     return forecastable, excluded, detail
 
@@ -159,6 +161,16 @@ def build_report(
             "text": f"{states['at_risk']} series are quiet longer than expected — low confidence",
         })
 
+    censoring_info = lifecycle_detail["censoring"]
+    if censoring_info["method"] == "inferred":
+        findings.append({
+            "level": "warn",
+            "text": (
+                "no stock column — stockouts are inferred conservatively and most "
+                "are missed. Send stock levels to measure true demand."
+            ),
+        })
+
     dead = lifecycle_detail["dead_stock"]
     if dead["count"]:
         if dead["valued"]:
@@ -202,6 +214,7 @@ def build_report(
         "findings": findings,
         "cleaning": cleaning.as_dict(),
         "lifecycle": lifecycle_detail["states"],
+        "censoring": lifecycle_detail["censoring"],
         "dead_stock": lifecycle_detail["dead_stock"],
         "forecastable_ids": forecastable,
     }

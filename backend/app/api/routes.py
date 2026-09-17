@@ -18,6 +18,7 @@ from ..decision import params as params_mod
 from ..integrations import slack
 from ..services import export_service
 from ..services import pipeline_service as svc
+from ..services import view_models as views
 
 router = APIRouter(prefix="/api/v1")
 
@@ -48,6 +49,22 @@ class AlertRequest(BaseModel):
     limit: int = 5
 
 
+# ----------------------------------------------------------------- projects
+
+@router.get("/projects")
+def list_projects():
+    """Project chooser. A project is a dataset plus what was derived from it."""
+    return views.projects()
+
+
+@router.get("/projects/{project_id}")
+def get_project(project_id: str):
+    try:
+        return views.project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="project not found")
+
+
 # ---------------------------------------------------------------- ingestion
 
 @router.post("/ingest")
@@ -73,8 +90,9 @@ def ingest_json(body: IngestRecords):
 
 @router.get("/datasets/{dataset_id}/mapping")
 def get_mapping(dataset_id: str):
+    """Review table. Shows what was detected, how sure we are, and why."""
     try:
-        return svc.get_mapping(dataset_id)
+        return views.mapping(dataset_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="dataset not found")
 
@@ -83,7 +101,8 @@ def get_mapping(dataset_id: str):
 def confirm_mapping(dataset_id: str, body: MappingOverrides):
     try:
         result = svc.confirm_mapping(dataset_id, body.overrides, body.source_id)
-        result["health"] = svc.prepare(dataset_id)
+        svc.prepare(dataset_id)
+        result["health"] = views.health(dataset_id)
         return result
     except KeyError:
         raise HTTPException(status_code=404, detail="dataset not found")
@@ -165,7 +184,7 @@ def set_params(dataset_id: str, body: ParamsRequest):
 @router.get("/datasets/{dataset_id}/health")
 def get_health(dataset_id: str):
     try:
-        return svc.get_health(dataset_id)
+        return views.health(dataset_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="dataset not found")
 
@@ -218,10 +237,11 @@ def start_forecast(dataset_id: str, body: ForecastRequest, background: Backgroun
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str):
-    row = db.query_one("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-    if not row:
+    """Processing screen polls this. Step keys stay stable across polls."""
+    try:
+        return views.job(job_id)
+    except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
-    return dict(row)
 
 
 @router.get("/forecasts/{dataset_id}")
@@ -251,19 +271,51 @@ def get_series(dataset_id: str, series_id: str):
     return result
 
 
+# ------------------------------------------------------------ dashboard tabs
+
+@router.get("/overview/{dataset_id}")
+def get_overview(dataset_id: str):
+    """KPI row, main chart, inventory posture, ranked actions."""
+    try:
+        return views.overview(dataset_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+
+
+@router.get("/demand/{dataset_id}")
+def get_demand(
+    dataset_id: str,
+    date_range: str = "18m",
+    product: str = "all",
+    location: str = "all",
+    compare: str = "forecast",
+):
+    """Demand & Sales tab. Filtering happens here, never in the browser."""
+    try:
+        return views.demand(dataset_id, date_range, product, location, compare)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+
+
 # ---------------------------------------------------------------- decisions
 
 @router.get("/recommendations/{dataset_id}")
-def get_recommendations(dataset_id: str, limit: int = 50, risk: str | None = None):
-    return {
-        "dataset_id": dataset_id,
-        "recommendations": svc.get_recommendations(dataset_id, limit, risk),
-    }
+def get_recommendations(
+    dataset_id: str,
+    risk: str = "all",
+    location: str = "all",
+    category: str = "all",
+):
+    """Supply Chain tab. `risk=attention` means critical or at_risk."""
+    try:
+        return views.supply_chain(dataset_id, risk, location, category)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
 
 
 @router.get("/value/{dataset_id}")
 def get_value(dataset_id: str):
-    result = svc.get_value_simulation(dataset_id)
+    result = views.value(dataset_id)
     if not result:
         raise HTTPException(status_code=404, detail="no simulation yet — run a forecast first")
     return result

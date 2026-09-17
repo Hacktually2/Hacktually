@@ -41,6 +41,7 @@ from ..enrich import censoring
 from ..evaluation.backtest import evaluate_batched, segment_defaults, select_model
 from ..forecasting.baselines import MovingAverageModel
 from ..forecasting.router import candidates_for
+from ..schema import reshape as reshape_mod
 from ..schema.mapper import build_mapping
 from ..schema.profiler import profile_dataframe
 
@@ -72,6 +73,18 @@ def read_any(path: Path) -> pl.DataFrame:
     )
 
 
+def read_reshaped(path: Path) -> tuple[pl.DataFrame, dict | None]:
+    """Read, then unpivot if the file runs time sideways.
+
+    Done here rather than later so the profiler and mapper only ever see long
+    format. A wide file has no timestamp column and no target column to find, so
+    without this the mapper correctly refuses a perfectly good dataset.
+    """
+    df = read_any(path)
+    df, info = reshape_mod.reshape(df)
+    return df, info.as_dict() if info else None
+
+
 # ---------------------------------------------------------------- ingestion
 
 def _store_source(
@@ -89,8 +102,20 @@ def _store_source(
     raw_path = db.UPLOAD_DIR / f"{source_id}{suffix}"
     raw_path.write_bytes(raw_bytes)
 
-    df = read_any(raw_path)
+    df, wide_info = read_reshaped(raw_path)
     mapping = build_mapping(df.columns, profile_dataframe(df))
+
+    # Reshaping created the timestamp and target columns, so they are known
+    # facts rather than inferences — overwrite whatever the rules guessed.
+    if wide_info:
+        forced = reshape_mod.forced_mapping()
+        for field in mapping.fields:
+            if field.canonical in forced:
+                field.source_column = forced[field.canonical]
+                field.confidence = 0.99
+                field.reason = (
+                    f"created by unpivoting {wide_info['date_columns']} date columns"
+                )
 
     # Which locations this file covers, so a re-upload replaces rather than doubles.
     locations: list[str] = []
@@ -125,6 +150,7 @@ def _store_source(
         "rows": df.height,
         "columns": df.columns,
         "locations": locations,
+        "wide_format": wide_info,
         "preset_matched": mapping.preset_matched,
         "mapping": mapping.model_dump(),
         "raw_path": str(raw_path),
@@ -158,6 +184,7 @@ def ingest(filename: str, raw_bytes: bytes, branch_label: str | None = None) -> 
         "locations": source["locations"],
         "preset_matched": source["preset_matched"],
         "mapping": source["mapping"],
+        "wide_format": source.get("wide_format"),
     }
 
 
@@ -361,7 +388,8 @@ def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, Cle
         mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
         if mapping.missing_required():
             continue
-        frame, partial = canonicalize(read_any(Path(source["raw_path"])), mapping)
+        source_df, _ = read_reshaped(Path(source["raw_path"]))
+        frame, partial = canonicalize(source_df, mapping)
         rows_received += partial.rows_received
         if frame.height:
             frames.append(frame)
