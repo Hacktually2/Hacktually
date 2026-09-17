@@ -12,10 +12,12 @@ import {
 } from "@/auth/db";
 import { Sparkline } from "@/components/charts/bars";
 import { ButtonLink } from "@/components/ui/button";
-import { ArrowRight, Clock, FileText, Plus, Upload, Users } from "@/components/ui/icons";
+import { ArrowRight, Check, Clock, FileText, Layers, Plus, Upload, Users } from "@/components/ui/icons";
 import { DataSource } from "@/components/ui/data-source";
 import { PageHeader } from "@/components/ui/panel";
-import { formatDateTime, formatNumber } from "@/lib/format";
+import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
+import { backend } from "@/lib/backend/client";
+import { attempt } from "@/lib/backend/source";
 import { requireSession } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Projects" };
@@ -69,6 +71,41 @@ export default async function ProjectsPage() {
   );
   const branchDashboards = projects.filter((p) => allowed.has(p.project_id));
 
+  // The network figure belongs here, not only behind a click. An owner opening
+  // this page wants the one number for the whole company before they pick a
+  // branch, and making them find the merged dashboard to get it is the sort of
+  // thing that turns a product into a tool people stop opening.
+  //
+  // Only for projects whose branches share a dataset, and every call is
+  // best-effort: a project wired to fixture ids answers nothing and its card
+  // renders exactly as before.
+  const summaries = new Map<string, NetworkSummary>();
+  await Promise.all(
+    mine.map(async (project) => {
+      const branches = listBranches(project.project_id);
+      const ids = new Set(
+        branches.map((b) => b.forecast_project_id).filter((id): id is string => !!id),
+      );
+      if (ids.size !== 1) return;
+      const datasetId = [...ids][0];
+
+      const [insight, rollup] = await Promise.all([
+        attempt(() => backend.getBranches(datasetId)),
+        attempt(() => backend.getHierarchy(datasetId)),
+      ]);
+      if (!insight.ok) return;
+
+      summaries.set(project.project_id, {
+        datasetId,
+        series: insight.data.network.series,
+        attentionRatePercent: insight.data.network.attention_rate_percent,
+        medianWapePercent: insight.data.network.median_wape_percent,
+        horizonTotal: rollup.ok ? rollup.data.network.horizon_total : null,
+        coherent: rollup.ok ? (rollup.data.coherence?.coherent ?? null) : null,
+      });
+    }),
+  );
+
   return (
     <main className="layout-shell flex-1 py-10">
       <div className="animate-enter">
@@ -108,7 +145,11 @@ export default async function ProjectsPage() {
                 className="animate-enter min-w-0"
                 style={{ "--enter-delay": `${60 + i * 50}ms` } as CSSProperties}
               >
-                <AuthProjectCard project={project} isOwner={isOwner} />
+                <AuthProjectCard
+                  project={project}
+                  isOwner={isOwner}
+                  summary={summaries.get(project.project_id) ?? null}
+                />
               </div>
             ))}
           </div>
@@ -148,25 +189,43 @@ export default async function ProjectsPage() {
   );
 }
 
+export interface NetworkSummary {
+  datasetId: string;
+  series: number;
+  attentionRatePercent: number;
+  medianWapePercent: number | null;
+  /** Units forecast across the whole network for the horizon. */
+  horizonTotal: number | null;
+  /** Whether the branch totals add up to the network total. */
+  coherent: boolean | null;
+}
+
 /**
- * A project this workspace actually owns or manages, as opposed to a fixture.
- * It leads to team and access rather than to a dashboard, because that is the
- * decision waiting on the person looking at it.
+ * A project this workspace owns or manages, as opposed to a fixture.
+ *
+ * Deliberately **not** one big link any more. It used to be a single click
+ * target to team-and-access with the branch network tacked underneath as a
+ * small text link, which got the emphasis backwards: the network is what an
+ * owner opens daily, and access is what they configure once. A link cannot
+ * contain another link, so the card had no way to offer both properly until it
+ * stopped being one.
+ *
+ * The network numbers are here rather than only inside the map, because the
+ * first question is "how is the company" and the second is "which branch".
  */
 function AuthProjectCard({
   project,
   isOwner,
+  summary,
 }: {
   project: AuthProject;
   isOwner: boolean;
+  summary: NetworkSummary | null;
 }) {
   const branches = listBranches(project.project_id);
 
   return (
-    <Link
-      href={`/projects/${project.project_id}/team`}
-      className="surface-card group flex h-full flex-col p-5 transition-shadow duration-(--duration-base) ease-(--ease-standard) hover:shadow-card"
-    >
+    <div className="surface-card flex h-full flex-col p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate text-section font-semibold text-brand-deep">
@@ -189,15 +248,59 @@ function AuthProjectCard({
         <Stat label="Rows" value={formatNumber(project.dataset_rows)} />
       </dl>
 
-      <p className="mt-4 flex items-center gap-1.5 text-body-sm font-semibold text-brand-blue-ink">
-        <Users size={15} />
-        {isOwner ? "Manage team and access" : "Your branches"}
-        <ArrowRight
-          size={15}
-          className="transition-transform duration-(--duration-fast) group-hover:translate-x-0.5"
-        />
-      </p>
-    </Link>
+      {summary && (
+        <div className="mt-4 rounded-md border border-border-subtle bg-surface-sunken/40 p-4">
+          <p className="text-meta font-semibold tracking-wide text-ink-tertiary uppercase">
+            Whole network, next 30 days
+          </p>
+          <dl className="mt-2.5 grid grid-cols-2 gap-3">
+            {summary.horizonTotal !== null && (
+              <Stat
+                label="Forecast demand"
+                value={`${formatNumber(Math.round(summary.horizonTotal))} units`}
+              />
+            )}
+            <Stat
+              label="Needs attention"
+              value={formatPercent(summary.attentionRatePercent)}
+            />
+          </dl>
+          {summary.coherent && (
+            <p className="mt-2.5 flex items-start gap-1.5 text-meta text-ink-tertiary">
+              <Check size={12} className="mt-0.5 shrink-0 text-status-healthy" />
+              Branch totals add up to this figure — it is their sum, not a separate
+              estimate.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Two destinations, two buttons. The network first. */}
+      <div className="mt-4 flex flex-wrap gap-2 pt-1">
+        <ButtonLink href={`/projects/${project.project_id}/network`} size="sm">
+          <Layers size={15} />
+          {isOwner ? "Branch network" : "Your branch"}
+        </ButtonLink>
+        {summary && (
+          <ButtonLink
+            href={`/projects/${summary.datasetId}/dashboard`}
+            variant="secondary"
+            size="sm"
+          >
+            <ArrowRight size={15} />
+            Merged dashboard
+          </ButtonLink>
+        )}
+        <ButtonLink
+          href={`/projects/${project.project_id}/team`}
+          variant="ghost"
+          size="sm"
+        >
+          <Users size={15} />
+          {isOwner ? "Team & access" : "Your branches"}
+        </ButtonLink>
+      </div>
+    </div>
   );
 }
 

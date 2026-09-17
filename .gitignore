@@ -73,3 +73,8 @@ data/generated/
 # for how to re-fetch.
 /test2/
 /test3/
+
+# macOS-style duplicates of the auth database. The pattern above misses these
+# because of the space, and they carry real user rows.
+data/auth*.db
+data/auth*.db-*

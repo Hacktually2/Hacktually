@@ -212,6 +212,46 @@ export async function requireForecastAccess(forecastProjectId: string): Promise<
   return user;
 }
 
+/**
+ * Does this person own the project a forecasting dataset belongs to?
+ *
+ * Non-throwing, because the caller is usually a page deciding whether to
+ * render an owner-only section. A manager opening the dashboard should find
+ * the section absent, not find the whole page gone — hiding is the right
+ * failure here, and `requireForecastOwner` below is what actually refuses.
+ *
+ * An unclaimed dataset answers true only for whoever uploaded it, which mirrors
+ * the default-deny rule in `requireForecastAccess`. An earlier version of this
+ * returned true for any signed-in user on an unclaimed dataset, reasoning that
+ * they could already read all of it anyway. That reasoning stopped being true
+ * the moment `requireForecastAccess` closed that hole, and this function is
+ * reachable from a Server Action without the page — so it must never be more
+ * permissive than the read check guarding the same data.
+ */
+export async function isForecastOwner(forecastProjectId: string): Promise<boolean> {
+  const user = await getSession();
+  if (!user) return false;
+
+  const branch = findBranchByForecastProject(forecastProjectId);
+  if (!branch) return uploaderOf(forecastProjectId) === user.id;
+
+  return getProject(branch.project_id)?.owner_id === user.id;
+}
+
+/**
+ * The owner of the project a forecasting dataset belongs to, or a 404.
+ *
+ * For the capabilities a branch manager must not have even by direct POST —
+ * scenario simulation is one, because it is a whole-network planning tool and
+ * a manager is scoped to one branch. A Server Action is reachable without the
+ * page that renders it, so hiding the UI is not the control; this is.
+ */
+export async function requireForecastOwner(forecastProjectId: string): Promise<AuthUser> {
+  const user = await requireSession();
+  if (!(await isForecastOwner(forecastProjectId))) notFound();
+  return user;
+}
+
 export interface BranchScope {
   /**
    * The branch this request is scoped to, or null for the whole network.

@@ -166,7 +166,46 @@ export interface BackendBranches {
     units_coverable_by_transfer: number;
     flags: string[];
   }[];
-  network: Record<string, unknown>;
+  network: {
+    branches: number;
+    series: number;
+    attention_rate_percent: number;
+    dormant_rate_percent: number;
+    demand_trend_percent: number;
+    median_wape_percent: number | null;
+  };
   transfers: unknown[];
   note: string | null;
+}
+
+/**
+ * GET /api/v1/datasets/{id}/hierarchy — the network total, rolled up.
+ *
+ * Bottom-up, so `coherence` is a property rather than a hope: the network
+ * figure IS the sum of the branch figures, and the endpoint reports the gap so
+ * the claim can be checked rather than trusted. On the demo file the gap is
+ * 0.09 units across 822,991, which is float addition and nothing else.
+ *
+ * That matters more than it sounds. Top-down or reconciled forecasts can leave
+ * a head office total that no branch recognises, and the argument that follows
+ * is what kills adoption of a planning tool.
+ */
+export interface BackendHierarchy {
+  network: {
+    horizon_total: number;
+    per_period: number[];
+  };
+  branches: {
+    location_id: string;
+    horizon_total: number;
+    series: number;
+    recommended_qty: number;
+    series_at_risk: number;
+  }[];
+  coherence: {
+    network_total: number;
+    sum_of_branches: number;
+    gap: number;
+    coherent: boolean;
+  } | null;
 }

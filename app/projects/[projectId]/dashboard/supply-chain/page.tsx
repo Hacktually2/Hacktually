@@ -19,6 +19,7 @@ import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import { runSimulation, DEFAULT_SCENARIO } from "@/app/dummy-data/simulation";
+import { isForecastOwner } from "@/lib/session";
 import { savePlanningParameters, simulate } from "./actions";
 
 export const metadata: Metadata = { title: "Supply Chain" };
@@ -53,9 +54,17 @@ export default async function SupplyChainPage({
     getPlanningParameters(project.dataset_id),
   ]);
 
+  // Scenario planning is the owner's. A manager sees the section explained
+  // rather than missing, because silently absent features read as broken —
+  // and the action itself refuses them regardless of what is rendered.
+  const canSimulate = await isForecastOwner(projectId);
+
   // The neutral run is computed here, so the simulator opens showing the real
-  // current plan rather than an empty state waiting on a round trip.
-  const neutralScenario = runSimulation(project.dataset_id, DEFAULT_SCENARIO);
+  // current plan rather than an empty state waiting on a round trip. Skipped
+  // for a manager: it is work whose result they will never be shown.
+  const neutralScenario = canSimulate
+    ? runSimulation(project.dataset_id, DEFAULT_SCENARIO)
+    : null;
 
   const filterSpecs: FilterSpec[] = [
     {
@@ -173,11 +182,24 @@ export default async function SupplyChainPage({
           description="Run the same decision engine against different assumptions, and see which items change before you commit to anything."
         />
         <div className="mt-5">
-          <ScenarioSimulator
-            datasetId={project.dataset_id}
-            initial={neutralScenario}
-            run={simulate}
-          />
+          {neutralScenario ? (
+            <ScenarioSimulator
+              initial={neutralScenario}
+              // Bound on the server, so the browser cannot aim it at another
+              // dataset and the owner check has something to check against.
+              run={simulate.bind(null, projectId, project.dataset_id)}
+            />
+          ) : (
+            <Panel title="Scenario planning is set by the project owner">
+              <p className="max-w-prose text-body-sm leading-relaxed text-ink-secondary">
+                The levers here — supplier lead time, service level, minimum order
+                quantity and order capacity — are commercial terms agreed for the whole
+                network, not settings a branch chooses. Your recommendations already use
+                the ones in force. Ask the owner to run a scenario if you think a term
+                should change.
+              </p>
+            </Panel>
+          )}
         </div>
       </section>
     </main>

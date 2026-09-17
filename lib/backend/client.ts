@@ -27,6 +27,7 @@ import type {
 } from "@/app/dummy-data/types";
 import type {
   BackendBranches,
+  BackendHierarchy,
   BackendDataset,
   BackendForecastList,
   BackendHealthCheck,
@@ -209,6 +210,10 @@ export const backend = {
    * and ranked actions — before anything is serialised. That is what makes it a
    * boundary: without it the other branches' numbers are already in the payload
    * and any narrowing we do is cosmetic.
+   *
+   * The backend has answered this parameter since B11. This client did not pass
+   * it, so a dataset holding several branches could only ever be read as one
+   * lump — which is what the branch network map needed it for.
    */
   getOverview: (datasetId: string, location?: string) =>
     request<OverviewResponse>(
@@ -277,7 +282,7 @@ export const backend = {
     request<BackendBranches>(`/api/v1/branches/${datasetId}`),
 
   getHierarchy: (datasetId: string) =>
-    request<Record<string, unknown>>(`/api/v1/datasets/${datasetId}/hierarchy`),
+    request<BackendHierarchy>(`/api/v1/datasets/${datasetId}/hierarchy`),
 
   sendSlackAlert: (datasetId: string, seriesIds: string[], limit = 5) =>
     request<{ sent: boolean; message?: string; reason?: string }>("/api/v1/alerts/slack", {

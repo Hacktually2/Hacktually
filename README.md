@@ -75,6 +75,36 @@ python3 scripts/generate_dataset.py
 Writes `data/generated/penjualan_abc_distribution.csv` — 138,789 rows, 8 branches, 40 SKUs,
 18 months, with Lebaran seasonality and a stock ledger. Deterministic, stdlib only.
 
+For the **branch network view** there is a second generator, built so the six nodes come
+out in visibly different colours rather than all the same one:
+
+```bash
+py -3.11 backend/scripts/make_network_demo.py
+```
+
+Writes `data/demo/network/penjualan_jaringan.csv` (6 branches, 311 series, 264,661 rows,
+22 MB, Jan 2024 – Apr 2026) and `data/demo/network/cabang_pic.csv` (branch code → manager
+name and email, for the multi-branch onboarding path).
+
+Branch health in that file is **designed**: closing inventory is set per branch so each
+node lands in a chosen risk band. Demand itself is modelled normally. See §9.6 of
+[backend-handoff.md](backend-handoff.md) for the table and for what may and may not be
+claimed about it.
+
+### Optional: a faster demo run
+
+A full backtest runs every candidate model over every fold for every series, which on a
+300-series file is thousands of calls to the GPU service. For a demo:
+
+```bash
+MOCK_MODE=1 .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
+
+A representative slice of each demand class is backtested for real and the rest of that
+class inherits its measured averages. Model choice does not change. Every estimated series
+says so in its selection reason, `/health` reports `mock_mode`, and the dataset's health
+report carries a warning — so leave it off anywhere a number might be quoted.
+
 ---
 
 ## Buying it (the logged-out flow)
@@ -153,15 +183,35 @@ fills them in:
    Confirm → cleaning and profiling run, then a forecast job is queued and the processing
    screen follows it live.
 4. **Dashboard.** Overview, Demand & Sales, Supply Chain — all from the live service.
-5. **Team & access →** copy the **project link** (`/projects/<id>/team`) and send it to a
+5. **Branch network** — the `Branch network` button on the project card. Every branch is
+   plotted by how much of its catalogue needs ordering attention (right) against how much
+   catalogue it carries (up), with bubble area as share of network demand. The quadrant
+   divider sits on the measured network average, so "above average" is a fact about that
+   company rather than a threshold we picked. Hover or tab to a bubble for its numbers and
+   a link into that branch.
+
+   The card also carries the whole-network forecast, and `Merged dashboard` opens every
+   branch at once. That total is the sum of the branch forecasts — the rollup is bottom-up,
+   and `/datasets/{id}/hierarchy` reports the gap so the claim can be checked.
+
+   Use `penjualan_jaringan.csv` for this screen. The other file is not shaped to make the
+   branch colours differ.
+6. **Team & access →** copy the **project link** (`/projects/<id>/team`) and send it to a
    manager, or register `budi.santoso@gmail.com` against one branch directly. A new
    account's password is shown once, on your screen.
 
    The project link works for any signed-in account. A manager who holds nothing there sees
    the branch list and a request form; they do **not** see the dashboard, the invite token,
    the manager roster, agent access, or a single row of data.
-6. Sign in as **Budi** in another browser profile. He sees only his branch; typing another
+7. Sign in as **Budi** in another browser profile. He sees only his branch; typing another
    branch's URL gives a 404. Open the project link to request more, then approve it as Sari.
+
+   Two more things differ for him. The branch network shows **only his branch and no
+   network average**, and the **What if?** panel on Supply Chain is replaced by an
+   explanation: the levers there are supplier lead time, service level, MOQ and order
+   capacity, which are network-wide commercial terms rather than a branch's operating
+   choices. The server action refuses him even by direct POST, so hiding the panel is
+   presentation and the check is the control.
 
 There is also a seeded demo network (`PT ABC Distribution`, three branches wired to the
 fixture dashboards) so the access flow is demoable with the backend switched off.
