@@ -75,8 +75,8 @@ export default async function LoginPage() {
           ))}
         </ul>
         <p className="mt-10 max-w-md border-t border-border-subtle pt-6 text-meta text-ink-tertiary">
-          Data is processed and stored in Indonesia. Mapping decisions and forecast runs are
-          retained for audit.
+          Deploys to Indonesian cloud infrastructure. Mapping decisions and forecast runs
+          are recorded for audit.
         </p>
       </aside>
     </main>

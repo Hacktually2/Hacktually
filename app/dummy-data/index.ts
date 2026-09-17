@@ -11,17 +11,21 @@
 import { ACTIVITY } from "./activity";
 import { buildDemandResponse } from "./demand";
 import { MERGE_PREVIEW } from "./merge";
+import { SERIES_DETAIL } from "./series-detail";
 import { HEALTH, JOB_COMPLETED, JOB_SEQUENCE, MAPPING } from "./onboarding";
 import { OVERVIEW, VALUE_SIMULATION } from "./overview";
+import { PLANNING_PARAMETERS } from "./parameters";
 import { DEFAULT_PROJECT_ID, PROJECTS } from "./projects";
 import { buildSupplyChainResponse, type SupplyChainFilters } from "./supply-chain";
 import type {
   ActivityEvent,
   DemandResponse,
+  ForecastSeries,
   HealthReport,
   JobState,
   MappingResponse,
   MergePreview,
+  PlanningParameters,
   OverviewResponse,
   Project,
   SupplyChainResponse,
@@ -129,6 +133,42 @@ export async function getMergePreview(
 ): Promise<MergePreview> {
   await settle();
   return { ...MERGE_PREVIEW, incoming_filename: filename };
+}
+
+/**
+ * GET /api/v1/forecasts/{dataset_id}/{series}
+ *
+ * One series with its own history. Already in the frozen contract, so the
+ * product filter on Demand & Sales narrows the chart itself rather than showing
+ * the portfolio aggregate with a caveat attached.
+ */
+export async function getSeriesDetail(
+  _datasetId: string,
+  seriesId: string
+): Promise<ForecastSeries | null> {
+  await settle();
+  const detail = SERIES_DETAIL[seriesId];
+  if (!detail) return null;
+  const cutoff = detail.points.findIndex((p, i) => p.actual !== null && detail.points[i + 1]?.actual == null);
+  return {
+    label: `${detail.item_name} · ${detail.location}`,
+    cutoff_index: cutoff,
+    points: detail.points,
+    historical_range: { from: detail.points[0].t, to: detail.points[cutoff].t },
+    forecast_range: {
+      from: detail.points[cutoff + 1].t,
+      to: detail.points[detail.points.length - 1].t,
+    },
+    unit: "units",
+  };
+}
+
+/** NEEDS-ENDPOINT: GET /api/v1/datasets/{id}/parameters */
+export async function getPlanningParameters(
+  _datasetId: string
+): Promise<PlanningParameters> {
+  await settle();
+  return PLANNING_PARAMETERS;
 }
 
 /** GET /api/v1/value/{dataset_id} */

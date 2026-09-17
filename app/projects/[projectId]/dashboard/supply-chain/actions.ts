@@ -1,7 +1,11 @@
 "use server";
 
 import { runSimulation } from "@/app/dummy-data/simulation";
-import type { ScenarioInput, ScenarioOutcome } from "@/app/dummy-data/types";
+import type {
+  PlanningParameters,
+  ScenarioInput,
+  ScenarioOutcome,
+} from "@/app/dummy-data/types";
 import { requireSession } from "@/lib/session";
 
 /**
@@ -19,4 +23,19 @@ export async function simulate(
 ): Promise<ScenarioOutcome> {
   await requireSession();
   return runSimulation(datasetId, scenario);
+}
+
+/**
+ * Saves planning parameters. Stands in for
+ * PUT /api/v1/datasets/{id}/parameters
+ *
+ * The real one persists them and re-runs the decision engine; the forecast is
+ * untouched, because none of these inputs feed the model.
+ */
+export async function savePlanningParameters(
+  _datasetId: string,
+  _next: PlanningParameters
+): Promise<{ ok: true }> {
+  await requireSession();
+  return { ok: true };
 }

@@ -92,9 +92,6 @@ export function ChartHoverLayer({ data, unit }: { data: HoverData; unit: string 
           {data.yForecast[i] !== null && (
             <Dot x={x} y={data.yForecast[i]!} color="var(--color-series-forecast)" />
           )}
-          {data.ySales?.[i] != null && (
-            <Dot x={x} y={data.ySales[i]!} color="var(--color-series-sales)" />
-          )}
 
           <div
             className={`pointer-events-none absolute top-2 z-[var(--z-popover)] min-w-40 rounded-sm border border-border-subtle bg-surface-card p-3 shadow-card ${
@@ -112,13 +109,6 @@ export function ChartHoverLayer({ data, unit }: { data: HoverData; unit: string 
                   label="Actual"
                   value={`${formatNumber(data.actual[i]!)} ${unit}`}
                   color="var(--color-series-actual)"
-                />
-              )}
-              {data.sales?.[i] != null && (
-                <Row
-                  label="Sales"
-                  value={`${formatNumber(data.sales[i]!)} ${unit}`}
-                  color="var(--color-series-sales)"
                 />
               )}
               {data.forecast[i] !== null && data.actual[i] === null && (
