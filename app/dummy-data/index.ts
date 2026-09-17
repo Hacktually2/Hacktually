@@ -68,15 +68,19 @@ function settle(): Promise<void> | undefined {
  * A real project read model now, not a dataset list dressed up as one: name,
  * organisation, series count, status and a sparkline all come from the service.
  *
- * The seeded fixture branches stay appended, because they are the demo network
- * and exist by design rather than as a failed live read.
+ * `demoFixtures` appends the three fixture dashboards. Off by default: a
+ * workspace created five minutes ago has no business showing PT ABC's branches,
+ * and callers pass `ownsDemoNetwork(user.id)` so the demo profile keeps them.
  */
-export async function getProjects(_organisation = "PT ABC Distribution"): Promise<Sourced<Project[]>> {
+export async function getProjects(
+  options: { demoFixtures?: boolean } = {}
+): Promise<Sourced<Project[]>> {
   await settle();
   const sourced = await fromBackend(
     () => backend.listProjects(),
-    () => [],
+    () => []
   );
+  if (!options.demoFixtures) return sourced;
   return { ...sourced, data: [...sourced.data, ...PROJECTS] };
 }
 

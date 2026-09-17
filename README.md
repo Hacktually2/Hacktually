@@ -107,6 +107,28 @@ Two things worth knowing about the MVP shortcuts:
   role that decides who sees which branch. `npm run check:auth` asserts that forged,
   stripped, expired and contact-only-plan passes are all refused.
 
+## Adding managers without selling them a plan
+
+An owner generates a **company token** on **Team & access**, sends the join link, and the
+manager creates their own account with it:
+
+```
+/join-company?token=…  →  manager account in the owner's company  →  /projects
+```
+
+What the token does and does not do:
+
+| | |
+| --- | --- |
+| Creates | A **manager** account, in the owner's company. The role is not a form field — a token can never mint an owner, so it is not a way to skip checkout. |
+| Grants | Company membership only. The new manager sees the owner's project *names*, so they know which branches to ask for. Not one row of data. |
+| Expires | 14 days. A token forgotten in a WhatsApp thread stops working. |
+| Rotates | **Replace** writes a new token over the old row — that is the revocation, with no second list to keep in step. **Turn off** deletes it entirely. |
+| Keeps | Managers who already joined keep their accounts and their branches when you rotate. |
+
+An invalid token and an expired one give the same message, so the page cannot be used to
+test whether a token was ever real.
+
 ## Signing in
 
 Three accounts are seeded on first run and listed on the sign-in screen, with a button that
@@ -131,8 +153,13 @@ fills them in:
    Confirm → cleaning and profiling run, then a forecast job is queued and the processing
    screen follows it live.
 4. **Dashboard.** Overview, Demand & Sales, Supply Chain — all from the live service.
-5. **Team & access →** copy the project link, or register `budi.santoso@gmail.com` against
-   one branch. A new account's password is shown once, on your screen.
+5. **Team & access →** copy the **project link** (`/projects/<id>/team`) and send it to a
+   manager, or register `budi.santoso@gmail.com` against one branch directly. A new
+   account's password is shown once, on your screen.
+
+   The project link works for any signed-in account. A manager who holds nothing there sees
+   the branch list and a request form; they do **not** see the dashboard, the invite token,
+   the manager roster, agent access, or a single row of data.
 6. Sign in as **Budi** in another browser profile. He sees only his branch; typing another
    branch's URL gives a 404. Open the project link to request more, then approve it as Sari.
 
@@ -222,7 +249,10 @@ which, and what is still missing.
 rm -f data/auth.db* data/app.db*
 ```
 
-Accounts and the demo network reseed on the next request.
+The demo accounts and the PT ABC network **reseed on the next request** — deleting the file
+is not enough to get an empty instance. To keep it empty, set `AUTH_SKIP_SEED=1` in `.env`
+before the next request. With it set, the sign-in screen stops advertising demo credentials
+too, so it never offers a login that would be refused.
 
 **Port already in use.** A previous `next dev` or `uvicorn` is still running:
 
