@@ -5,7 +5,7 @@ import { getProjects } from "@/app/dummy-data";
 import type { Project } from "@/app/dummy-data/types";
 import { Sparkline } from "@/components/charts/bars";
 import { ButtonLink } from "@/components/ui/button";
-import { ArrowRight, Clock, FileText, Plus } from "@/components/ui/icons";
+import { ArrowRight, Clock, FileText, Plus, Upload } from "@/components/ui/icons";
 import { PageHeader } from "@/components/ui/panel";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { getSession } from "@/lib/session";
@@ -28,7 +28,7 @@ const STATUS = {
   },
   processing: {
     label: "Processing",
-    className: "text-brand-blue bg-brand-blue-soft border-brand-blue/25",
+    className: "text-brand-blue-ink bg-brand-blue-soft border-brand-blue/25",
     cta: "View progress",
     href: (id: string) => `/projects/${id}/processing`,
   },
@@ -62,14 +62,17 @@ export default async function ProjectsPage() {
         {projects.map((project, i) => (
           <div
             key={project.project_id}
-            className="animate-enter"
+            className="animate-enter min-w-0"
             style={{ "--enter-delay": `${80 + i * 60}ms` } as CSSProperties}
           >
             <ProjectCard project={project} />
+            {project.status === "ready" && (
+              <UpdateDataLink projectId={project.project_id} />
+            )}
           </div>
         ))}
         <div
-          className="animate-enter"
+          className="animate-enter min-w-0"
           style={{ "--enter-delay": `${80 + projects.length * 60}ms` } as CSSProperties}
         >
           <NewProjectCard />
@@ -127,7 +130,7 @@ function ProjectCard({ project }: { project: Project }) {
               ? `Forecast ${formatDateTime(project.forecast_generated_at)}`
               : `Uploaded ${formatDateTime(project.uploaded_at)}`}
           </p>
-          <p className="mt-2 flex items-center gap-1 text-body-sm font-semibold text-brand-blue">
+          <p className="mt-2 flex items-center gap-1 text-body-sm font-semibold text-brand-blue-ink">
             {status.cta}
             <ArrowRight
               size={15}
@@ -143,6 +146,22 @@ function ProjectCard({ project }: { project: Project }) {
           />
         )}
       </div>
+    </Link>
+  );
+}
+
+/**
+ * Sits outside the card link, because a link inside a link is invalid markup
+ * and unusable with a keyboard.
+ */
+function UpdateDataLink({ projectId }: { projectId: string }) {
+  return (
+    <Link
+      href={`/projects/${projectId}/update`}
+      className="mt-2 inline-flex items-center gap-1.5 rounded-sm px-1 py-1 text-body-sm font-medium text-ink-secondary transition-colors duration-(--duration-fast) hover:text-brand-blue-ink"
+    >
+      <Upload size={14} />
+      Update data
     </Link>
   );
 }

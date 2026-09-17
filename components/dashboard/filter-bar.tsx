@@ -79,7 +79,7 @@ export function FilterBar({ filters }: { filters: FilterSpec[] }) {
         <button
           type="button"
           onClick={() => startTransition(() => router.replace(pathname))}
-          className="mb-0.5 flex h-9 items-center gap-1.5 rounded-sm px-2.5 text-body-sm font-semibold text-brand-blue hover:bg-brand-blue-soft"
+          className="mb-0.5 flex h-9 items-center gap-1.5 rounded-sm px-2.5 text-body-sm font-semibold text-brand-blue-ink hover:bg-brand-blue-soft"
         >
           <X size={14} />
           Clear {activeCount} {activeCount === 1 ? "filter" : "filters"}

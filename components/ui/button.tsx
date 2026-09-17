@@ -24,8 +24,10 @@ const VARIANTS: Record<Variant, string> = {
     "bg-accent-purple text-ink-on-brand border border-accent-purple hover:brightness-95 shadow-ambient",
   // For deep-blue surfaces, where the usual brand blue would sit blue-on-blue.
   // The hierarchy inverts: the solid light button becomes the primary action.
+  // text-surface-brand, not text-brand-deep: the latter inverts to near-white in
+  // dark mode, which would put white text on this white button.
   inverse:
-    "bg-ink-on-brand text-brand-deep border border-ink-on-brand hover:bg-brand-pale",
+    "bg-ink-on-brand text-surface-brand border border-ink-on-brand hover:bg-ink-on-deep",
   inverseGhost:
     "bg-transparent text-ink-on-brand border border-ink-on-brand/35 hover:bg-ink-on-brand/10 hover:border-ink-on-brand/55",
 };

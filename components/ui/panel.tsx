@@ -25,7 +25,13 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className={`${tinted ? "surface-tinted" : "surface-card"} ${className ?? ""}`}>
+    // min-w-0: as a grid or flex item this would otherwise refuse to shrink
+    // below the min-content width of whatever it contains, and any panel
+    // holding a wide table would push the whole page sideways instead of
+    // letting that table scroll inside its own container.
+    <section
+      className={`min-w-0 ${tinted ? "surface-tinted" : "surface-card"} ${className ?? ""}`}
+    >
       {(title || action) && (
         <header
           className={`flex items-start justify-between gap-4 ${

@@ -70,7 +70,7 @@ export default async function OverviewPage({
           action={
             <Link
               href={`/projects/${projectId}/dashboard/demand`}
-              className="flex items-center gap-1 text-body-sm font-semibold text-brand-blue hover:text-brand-blue-hover"
+              className="flex items-center gap-1 text-body-sm font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
             >
               Investigate demand
               <ArrowRight size={15} />
@@ -107,7 +107,7 @@ function InventoryPanel({
       footer={
         <Link
           href={`/projects/${projectId}/dashboard/supply-chain`}
-          className="flex items-center gap-1 font-semibold text-brand-blue hover:text-brand-blue-hover"
+          className="flex items-center gap-1 font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
         >
           Open supply chain
           <ArrowRight size={15} />
@@ -186,7 +186,7 @@ function PriorityPanel({
       footer={
         <Link
           href={`/projects/${projectId}/dashboard/supply-chain?risk=attention`}
-          className="flex items-center gap-1 font-semibold text-brand-blue hover:text-brand-blue-hover"
+          className="flex items-center gap-1 font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
         >
           See all items needing attention
           <ArrowRight size={15} />

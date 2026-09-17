@@ -1,21 +1,17 @@
 import type { Metadata } from "next";
-import type { CSSProperties } from "react";
 import { notFound } from "next/navigation";
 import { getProject, getSupplyChain, getValueSimulation } from "@/app/dummy-data";
-import type { RiskLevel, ValueSimulation } from "@/app/dummy-data/types";
+import type { ValueSimulation } from "@/app/dummy-data/types";
 import { FilterBar, type FilterSpec } from "@/components/dashboard/filter-bar";
 import { InventoryWorkspace } from "@/components/dashboard/inventory-workspace";
+import { PostureStrip } from "@/components/dashboard/posture-strip";
+import { ScenarioSimulator } from "@/components/dashboard/scenario-simulator";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
+import { runSimulation, DEFAULT_SCENARIO } from "@/app/dummy-data/simulation";
+import { simulate } from "./actions";
 
 export const metadata: Metadata = { title: "Supply Chain" };
-
-const RISK_ACCENT = {
-  critical: "border-l-status-critical",
-  at_risk: "border-l-status-risk",
-  watch: "border-l-status-watch",
-  healthy: "border-l-status-healthy",
-} as const satisfies Record<RiskLevel, string>;
 
 export default async function SupplyChainPage({
   params,
@@ -35,6 +31,10 @@ export default async function SupplyChainPage({
     }),
     getValueSimulation(project.dataset_id),
   ]);
+
+  // The neutral run is computed here, so the simulator opens showing the real
+  // current plan rather than an empty state waiting on a round trip.
+  const neutralScenario = runSimulation(project.dataset_id, DEFAULT_SCENARIO);
 
   const filterSpecs: FilterSpec[] = [
     {
@@ -74,29 +74,25 @@ export default async function SupplyChainPage({
         />
       </div>
 
-      {/* Status summary doubles as the filter affordance. */}
-      <section
-        className="mt-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
-        aria-label="Status summary"
-      >
-        {supply.summary.map((band, i) => (
-          <div
-            key={band.risk}
-            className={`surface-card animate-enter border-l-4 p-4 ${RISK_ACCENT[band.risk]}`}
-            style={{ "--enter-delay": `${60 + i * 45}ms` } as CSSProperties}
-          >
-            <p className="text-body-sm font-medium text-ink-secondary">{band.label}</p>
-            <p className="mt-1 text-metric leading-none font-bold text-brand-deep" data-numeric>
-              {band.series_count}
-            </p>
-            <p className="mt-1.5 text-meta text-ink-tertiary">
-              {band.recommended_units > 0
-                ? `${formatNumber(band.recommended_units)} units to order`
-                : "No order required"}
-            </p>
-          </div>
-        ))}
-      </section>
+      <div className="mt-7 animate-enter [--enter-delay:60ms]">
+        <PostureStrip
+          summary={supply.summary}
+          headline={supply.headline}
+          activeRisk={one(query.risk) ?? "all"}
+          hrefFor={(risk) => {
+            // Keeps whatever else is filtered, and drops the parameter entirely
+            // when it is back to the neutral value.
+            const next = new URLSearchParams();
+            const location = one(query.location);
+            const category = one(query.category);
+            if (risk !== "all") next.set("risk", risk);
+            if (location) next.set("location", location);
+            if (category) next.set("category", category);
+            const qs = next.toString();
+            return qs ? `?${qs}` : `/projects/${projectId}/dashboard/supply-chain`;
+          }}
+        />
+      </div>
 
       <div className="mt-5 animate-enter [--enter-delay:260ms]">
         <FilterBar filters={filterSpecs} />
@@ -116,6 +112,20 @@ export default async function SupplyChainPage({
       <div className="mt-5 animate-enter [--enter-delay:360ms]">
         <ValuePanel value={value} />
       </div>
+
+      <section className="mt-10 scroll-mt-28" id="scenario" aria-label="Scenario simulation">
+        <PageHeader
+          title="What if?"
+          description="Run the same decision engine against different assumptions, and see which items change before you commit to anything."
+        />
+        <div className="mt-5">
+          <ScenarioSimulator
+            datasetId={project.dataset_id}
+            initial={neutralScenario}
+            run={simulate}
+          />
+        </div>
+      </section>
     </main>
   );
 }

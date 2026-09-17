@@ -91,7 +91,7 @@ export function LoginForm({ demoAccounts }: { demoAccounts: DemoCredential[] }) 
                     setEmail(account.email);
                     setPassword(account.password);
                   }}
-                  className="mt-2 text-body-sm font-semibold text-brand-blue transition-colors duration-(--duration-fast) hover:text-brand-blue-hover"
+                  className="mt-2 text-body-sm font-semibold text-brand-blue-ink transition-colors duration-(--duration-fast) hover:text-brand-blue-hover"
                 >
                   Fill these credentials
                 </button>

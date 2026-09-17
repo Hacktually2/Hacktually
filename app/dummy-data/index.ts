@@ -8,54 +8,82 @@
  *
  * Endpoint mapping is noted on each function.
  */
+import { ACTIVITY } from "./activity";
 import { buildDemandResponse } from "./demand";
+import { MERGE_PREVIEW } from "./merge";
 import { HEALTH, JOB_COMPLETED, JOB_SEQUENCE, MAPPING } from "./onboarding";
 import { OVERVIEW, VALUE_SIMULATION } from "./overview";
 import { DEFAULT_PROJECT_ID, PROJECTS } from "./projects";
 import { buildSupplyChainResponse, type SupplyChainFilters } from "./supply-chain";
 import type {
+  ActivityEvent,
   DemandResponse,
   HealthReport,
   JobState,
   MappingResponse,
+  MergePreview,
   OverviewResponse,
   Project,
   SupplyChainResponse,
   ValueSimulation,
 } from "./types";
 
+/**
+ * Optional stand-in for network latency.
+ *
+ * The fixtures resolve instantly, so every loading state would be invisible and
+ * therefore untestable and undemoable. Set DEMO_LATENCY_MS to make the wait
+ * real: the skeletons in each loading.tsx then behave exactly as they will
+ * against the live API.
+ *
+ * Defaults to 0, so it costs nothing unless someone asks for it.
+ */
+const LATENCY = Number(process.env.DEMO_LATENCY_MS ?? 0);
+
+function settle(): Promise<void> | undefined {
+  if (!LATENCY) return;
+  return new Promise((resolve) => setTimeout(resolve, LATENCY));
+}
+
 /** GET /api/v1/projects */
 export async function getProjects(): Promise<Project[]> {
+  await settle();
   return PROJECTS;
 }
 
 /** GET /api/v1/projects/{projectId} */
 export async function getProject(projectId: string): Promise<Project | undefined> {
+  await settle();
   return PROJECTS.find((p) => p.project_id === projectId);
 }
 
 /** GET /api/v1/datasets/{id}/mapping */
 export async function getMapping(_datasetId: string): Promise<MappingResponse> {
+  await settle();
   return MAPPING;
 }
 
 /** GET /api/v1/datasets/{id}/health */
 export async function getHealth(_datasetId: string): Promise<HealthReport> {
+  await settle();
   return HEALTH;
 }
 
 /** GET /api/v1/jobs/{job_id} */
 export async function getJob(_jobId: string): Promise<JobState> {
+  await settle();
   return JOB_COMPLETED;
 }
 
 /** The staged sequence the processing screen animates through. */
 export async function getJobSequence(): Promise<JobState[]> {
+  await settle();
   return JOB_SEQUENCE;
 }
 
 /** GET /api/v1/overview/{dataset_id} */
 export async function getOverview(_datasetId: string): Promise<OverviewResponse> {
+  await settle();
   return OVERVIEW;
 }
 
@@ -69,6 +97,7 @@ export async function getDemand(
   _datasetId: string,
   filters: Partial<DemandResponse["active_filters"]> = {}
 ): Promise<DemandResponse> {
+  await settle();
   return buildDemandResponse(filters);
 }
 
@@ -77,11 +106,34 @@ export async function getSupplyChain(
   _datasetId: string,
   filters: SupplyChainFilters = {}
 ): Promise<SupplyChainResponse> {
+  await settle();
   return buildSupplyChainResponse(filters);
+}
+
+/**
+ * NEEDS-ENDPOINT: GET /api/v1/activity?project_id=
+ * Newest first. Omitting the project id returns activity across all projects.
+ */
+export async function getActivity(projectId?: string): Promise<ActivityEvent[]> {
+  await settle();
+  return projectId ? ACTIVITY.filter((e) => e.project_id === projectId) : ACTIVITY;
+}
+
+/**
+ * NEEDS-ENDPOINT: POST /api/v1/datasets/{id}/append?dry_run=true
+ * Dry run only. Nothing is written until the user confirms.
+ */
+export async function getMergePreview(
+  _datasetId: string,
+  filename: string
+): Promise<MergePreview> {
+  await settle();
+  return { ...MERGE_PREVIEW, incoming_filename: filename };
 }
 
 /** GET /api/v1/value/{dataset_id} */
 export async function getValueSimulation(_datasetId: string): Promise<ValueSimulation> {
+  await settle();
   return VALUE_SIMULATION;
 }
 
