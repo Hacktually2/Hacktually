@@ -1,1775 +1,371 @@
-Boleh. Kalau dibikin lebih detail tapi tetap **realistis untuk 24 jam/3 orang**, aku akan treat sistem kalian sebagai **forecasting platform dengan satu canonical core**, lalu semua metode input/output cuma adapter di sekeliling core itu.
+# Architecture — Adaptive Demand Forecasting
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│                        CLIENT / ENTERPRISE                          │
-│                                                                     │
-│  Manual CSV      ERP/POS/WMS API      Scheduled export / webhook    │
-│      │                 │                         │                   │
-└──────┼─────────────────┼─────────────────────────┼───────────────────┘
-       │                 │                         │
-       ▼                 ▼                         ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       1. INGESTION LAYER                            │
-│                                                                     │
-│  POST /ingest/csv                                                   │
-│  POST /ingest/json                                                  │
-│  POST /forecast                                                     │
-│                                                                     │
-│  Tasks:                                                             │
-│  • validate file/request                                            │
-│  • create job_id                                                    │
-│  • store raw input                                                  │
-│  • extract basic metadata                                           │
-│  • send job to processing pipeline                                  │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                 2. DATA PROFILING / SCHEMA LAYER                   │
-│                                                                     │
-│  Example incoming columns:                                          │
-│                                                                     │
-│  tgl_order | kode_brg | qty_out | cabang | disc                    │
-│                                                                     │
-│  Profiler detects:                                                  │
-│  • dtype                                                             │
-│  • cardinality                                                       │
-│  • sample values                                                     │
-│  • null ratio                                                        │
-│  • datetime candidates                                               │
-│  • numeric candidates                                                │
-│  • ID/categorical candidates                                         │
-│                                                                     │
-│                  ↓                                                   │
-│                                                                     │
-│  SEMANTIC MAPPER                                                     │
-│  deterministic rules + optional LLM                                 │
-│                                                                     │
-│  tgl_order → timestamp                                               │
-│  kode_brg  → item_id                                                 │
-│  qty_out   → target                                                  │
-│  cabang    → location_id                                             │
-│  disc      → promotion                                               │
-│                                                                     │
-│  Returns confidence + asks user to confirm important mappings        │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     3. CANONICAL DATA MODEL                         │
-│                                                                     │
-│  Every company becomes the SAME internal representation             │
-│                                                                     │
-│  timestamp                                                          │
-│  series_id                                                          │
-│  target                                                             │
-│                                                                     │
-│  optional:                                                          │
-│  item_id                                                            │
-│  location_id                                                        │
-│  inventory                                                          │
-│  price                                                              │
-│  promotion                                                          │
-│  category                                                           │
-│  lead_time                                                          │
-│  MOQ                                                                │
-│                                                                     │
-│  series_id can be:                                                  │
-│  item_id + location_id                                              │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    4. DATA QUALITY ENGINE                           │
-│                                                                     │
-│  Deterministic processing — NOT LLM                                 │
-│                                                                     │
-│  duplicate rows        → aggregate/remove                           │
-│  missing timestamps    → reconstruct time index                     │
-│  irregular intervals   → normalize frequency                        │
-│  missing demand        → rule-based handling                         │
-│  negative demand       → flag as return / invalid                   │
-│  extreme values        → anomaly flag                               │
-│  short history         → forecastability warning                    │
-│  sparse demand         → sparsity flag                              │
-│                                                                     │
-│                     ↓                                               │
-│                                                                     │
-│                DATA HEALTH REPORT                                   │
-│                                                                     │
-│  Health score: 82/100                                               │
-│  Frequency: daily                                                   │
-│  History: 21 months                                                 │
-│  Series: 428 SKU-location                                           │
-│  Missing: 1.3%                                                      │
-│  Duplicate rows: 17                                                 │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                 5. FORECASTABILITY CHECK                            │
-│                                                                     │
-│  Does this series have enough usable data?                          │
-│                                                                     │
-│  YES → continue                                                     │
-│  NO  → mark as "insufficient data"                                  │
-│                                                                     │
-│  Avoid forcing a forecast when it doesn't make sense                │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                 6. DEMAND PATTERN CLASSIFIER                        │
-│                                                                     │
-│                       ADI + CV²                                     │
-│                                                                     │
-│                  ┌──── Smooth                                       │
-│                  ├──── Erratic                                      │
-│   each series ───┼──── Intermittent                                 │
-│                  └──── Lumpy                                        │
-│                                                                     │
-│  This classification DOES NOT automatically choose the model.       │
-│  It determines which models should be evaluated.                    │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    7. MODEL ROUTER                                  │
-│                                                                     │
-│  Smooth / Erratic:                                                  │
-│      TimesFM                                                        │
-│      Seasonal Naive                                                 │
-│                                                                     │
-│  Intermittent / Lumpy:                                              │
-│      TimesFM                                                        │
-│      Croston                                                        │
-│      TSB                                                            │
-│      Seasonal Naive                                                 │
-│                                                                     │
-│                    ZERO TRAINING                                    │
-│                                                                     │
-│  Optional covariates for TimesFM if available:                      │
-│  price, promotion, holiday/calendar, etc.                           │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   8. BACKTEST ENGINE                                │
-│                                                                     │
-│        Historical data                                              │
-│              │                                                      │
-│       ┌──────┴──────┐                                               │
-│       │ train       │ validation                                    │
-│       └─────────────┘                                               │
-│              ↓                                                      │
-│       candidate forecasts                                           │
-│              ↓                                                      │
-│                                                                     │
-│  Compare:                                                           │
-│  • WAPE                                                             │
-│  • bias                                                             │
-│  • optional MASE                                                    │
-│                                                                     │
-│                 ↓                                                   │
-│                                                                     │
-│  Select best VALIDATED model PER SERIES                             │
-│                                                                     │
-│  SKU-001/Jakarta → TimesFM                                          │
-│  SKU-002/Jakarta → TSB                                              │
-│  SKU-003/Bandung → Seasonal Naive                                   │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   9. FINAL FORECAST ENGINE                          │
-│                                                                     │
-│  Re-run selected method using full available history                │
-│                                                                     │
-│  Output:                                                            │
-│                                                                     │
-│  timestamp | series_id | forecast | lower | upper                   │
-│                                                                     │
-│  + model_used                                                       │
-│  + historical backtest score                                        │
-│  + demand_class                                                     │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    10. DECISION ENGINE                              │
-│                                                                     │
-│             FORECAST                                                │
-│                +                                                    │
-│             INVENTORY                                               │
-│                +                                                    │
-│             LEAD TIME                                               │
-│                +                                                    │
-│                MOQ                                                  │
-│                │                                                    │
-│                ▼                                                    │
-│                                                                     │
-│  • stockout risk                                                    │
-│  • days until projected stockout                                    │
-│  • suggested reorder                                                │
-│  • priority SKU                                                     │
-│                                                                     │
-│  IMPORTANT:                                                         │
-│  missing business parameter → ask user / return recommendation only │
-│  never invent missing inventory data                                │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-              ┌────────────────┴──────────────────┐
-              │                                   │
-              ▼                                   ▼
-┌────────────────────────┐          ┌──────────────────────────────┐
-│ 11A. DASHBOARD         │          │ 11B. SERVICE INTERFACE      │
-│                        │          │                              │
-│ Data health            │          │ REST API                     │
-│ Forecast chart         │          │ MCP server                   │
-│ Demand segmentation    │          │                              │
-│ Model selection        │          │ get_forecast()               │
-│ Stockout alerts        │          │ get_stockout_risk()          │
-│ Reorder recommendation │          │ get_reorder()                │
-└────────────────────────┘          │ get_data_health()             │
-                                    └──────────────┬───────────────┘
-                                                   │
-                              ┌────────────────────┴────────────┐
-                              ▼                                 ▼
-                       AI assistant                           Slack
+Build reference. What we are building and how the pieces fit. Execution schedule, cuts and pitch live in [PLAN.md](PLAN.md).
+
+## Frozen vs swappable
+
+Freeze these at hour 2. Everything else can change on new research without hurting anyone.
+
+| Frozen — expensive to change | Swappable — cheap to change |
+| --- | --- |
+| Canonical data model (field names and semantics) | Which models compete in the router |
+| REST API contract (paths, request/response field names) | Mapping rules, ERP presets, LLM prompts |
+| SQLite table shapes | Cleaning rules and health scoring weights |
+| `series_id` construction rule | Decision formulas, safety stock policy |
+| | Calendar contents, UI, MCP tool set |
+
+The adapter interfaces are what make the right column cheap. Do not bypass them for speed.
+
+## System flow
+
 ```
-
-## 1. Ingestion: CSV dan API harus first-class citizen
-
-Ini penting. Jangan arsitekturnya:
-
-```text
-CSV → special pipeline
-API → another pipeline
-```
-
-Harus:
-
-```text
-                    INPUT ADAPTERS
-
-CSV upload ─────────────┐
+CSV or JSON  ──►  one ingest endpoint
                        │
-JSON API ───────────────┼──→ RAW DATA OBJECT
+                       ▼
+              PROFILE + MAP
+              presets first, rules second, LLM last
+              human confirms, confidence shown
                        │
-ERP connector someday ─┘
-                              ↓
-                     SAME CORE PIPELINE
+                       ▼
+              CANONICAL MODEL
+              timestamp | series_id | target | optional
+                       │
+                       ▼
+              CLEAN (4 rules)  ──►  DATA HEALTH REPORT
+                       │
+                       ▼
+              ENRICH
+              Indonesian calendar  +  censored demand mask
+                       │
+                       ▼
+              SEGMENT  ADI + CV²
+              smooth | erratic | intermittent | lumpy
+                       │
+                       ▼
+              ROUTE  2-3 candidates per segment
+                       │
+                       ▼
+              BACKTEST  2 windows  ──►  SELECT (segment or series)
+                       │
+                       ▼
+              FINAL FORECAST  batched, with quantiles
+                       │
+                       ▼
+              DECIDE
+              ritel ──► purchase order qty
+              manufaktur ──► production qty ──► raw material
+                       │
+                       ▼
+              VALUE SIMULATION  →  rupiah
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+    Dashboard      REST API       MCP server
+                                       │
+                              agents / Slack / WA
 ```
 
-Jadi CSV sebenarnya hanya **salah satu transport mechanism**.
+## Canonical data model
 
-Hackathon API kalian cukup punya contract seperti:
+Every dataset becomes this. The pipeline knows nothing else.
 
-```http
-POST /api/v1/ingest/csv
+```
+required:
+  timestamp     datetime, normalized to detected frequency
+  series_id     string
+  target        float, the demand quantity
+
+optional:
+  item_id       string
+  location_id   string
+  inventory     float
+  price         float
+  promo         0/1
+  category      string
+  lead_time     int, days
+  moq           float
 ```
 
-untuk file:
+`series_id = item_id + "__" + location_id`, or `item_id` alone when there is no location.
 
-```text
-sales.csv
+Never add a required field. New signals arrive as optional columns and the models use them when present.
+
+## Ingestion
+
+One endpoint, content-type decides the parser. "CSV is just a transport" is a pitch line, not a subsystem.
+
+```
+POST /api/v1/ingest      multipart CSV, or application/json {source, records[]}
+  -> {dataset_id, status: "profiling"}
 ```
 
-atau:
+## Profiling and mapping
 
-```http
-POST /api/v1/ingest/json
-```
+Three tiers, cheapest and most reliable first. Each tier only handles what the one above could not.
 
-dengan:
+**Tier 1 — ERP presets.** Mid-market Indonesia runs a handful of systems. Match the header fingerprint against known exports (Accurate, Jubelio, HashMicro, SimpliDOTS, Moka) and map directly. No network, no inference, instant, and it demos as market knowledge rather than a model call.
+
+**Tier 2 — rules.** dtype, null ratio, cardinality, monotonicity, sample values, name matching against a synonym table. Handles most generic exports.
+
+**Tier 3 — LLM.** Only ambiguous columns, and only metadata — never the data itself.
 
 ```json
-{
-  "source": "erp",
-  "records": [
-    {
-      "transaction_date": "2026-08-01",
-      "product_code": "ABC123",
-      "branch": "JKT01",
-      "qty_out": 125,
-      "inventory": 300
-    }
-  ]
-}
+{"column": "qty_out", "dtype": "integer", "sample": [12, 25, 9, 31],
+ "min": 0, "max": 840, "null_ratio": 0.001, "cardinality": 412}
 ```
 
-Kedua request menghasilkan:
+Every mapping carries a confidence. The user confirms before anything runs.
+
+```
+GET  /api/v1/datasets/{dataset_id}/mapping
+POST /api/v1/datasets/{dataset_id}/mapping    {overrides: {...}}
+```
+
+## Cleaning
+
+Deterministic. AI understands semantics; code cleans data. Four transforms only — everything else is a flag in the report, not a mutation.
+
+1. Sort by timestamp, aggregate duplicate `(timestamp, series_id)` rows
+2. Detect frequency, reindex to a complete time axis
+3. Negative target → flag as return, exclude from fitting
+4. Normalize frequency (resample) when intervals are irregular
+
+Reported but not transformed: anomaly spikes, sparsity, short history, censored demand.
+
+**Data health report** is a deliverable, not a score. It must end with what to fix:
 
 ```json
-{
-  "job_id": "forecast_abc123",
-  "status": "profiling"
-}
+{"rows_received": 154239, "duplicates_found": 193, "missing_timestamps": 82,
+ "negative_values": 7, "series_total": 428, "series_forecastable": 417,
+ "series_excluded": [{"series_id": "ABC__JKT", "reason": "only 6 weeks of history"}],
+ "health_score": 82}
 ```
 
-Kemudian frontend bisa polling:
+## Enrichment
 
-```http
-GET /api/v1/jobs/forecast_abc123
+### Indonesian calendar
+
+One row per date, joined onto every series. Passed to the model as known-future covariates, because every value is known in advance for the whole horizon.
+
+```
+date, is_ramadan, days_to_lebaran, is_thr_window,
+is_payday_week, is_regional_holiday, is_school_term
 ```
 
-Ini membuat architecture terasa jauh lebih production-ready tanpa coding terlalu banyak.
+`days_to_lebaran` is signed and matters most in the range −30 to +14. Lebaran moves roughly 11 days earlier each year, which is precisely what fixed-calendar seasonality cannot represent.
 
----
+Fallback if covariates underperform: estimate a multiplicative uplift factor per category from history (mean demand in the 3 weeks pre-Lebaran vs baseline) and apply it to the forecast. Same demo, simpler mechanism.
 
-# 2. Schema adapter adalah bagian terpenting produk
+### Censored demand
 
-Misalnya customer A punya:
+Where inventory reaches zero or sales sit flat at a ceiling, recorded sales understate real demand. Mask those periods from fitting and mark them `demand_censored` in the health report. We forecast demand, not sales.
 
-```text
-tgl
-sku
-qty
-gudang
+## Segmentation
+
+Per series, deterministic, no training:
+
+```
+ADI = mean interval between non-zero demand
+CV² = (std of non-zero demand / mean of non-zero demand)²
+
+ADI < 1.32 and CV² < 0.49  -> smooth
+ADI < 1.32 and CV² >= 0.49 -> erratic
+ADI >= 1.32 and CV² < 0.49 -> intermittent
+ADI >= 1.32 and CV² >= 0.49 -> lumpy
 ```
 
-Customer B:
+Segmentation does not pick the model. It picks which models are allowed to compete.
 
-```text
-invoice_date
-product_code
-units_sold
-branch_id
+## Model router
+
+```
+smooth       -> TimesFM, SeasonalNaive
+erratic      -> TimesFM, SeasonalNaive
+intermittent -> TimesFM, TSB, SeasonalNaive
+lumpy        -> TimesFM, Croston, SeasonalNaive
 ```
 
-Customer C:
-
-```text
-Date
-Item No
-Quantity Out
-Warehouse
-```
-
-Internal pipeline **tidak boleh care**.
-
-Semua harus menjadi:
-
-```text
-timestamp
-item_id
-location_id
-target
-```
-
-Contohnya:
-
-```json
-{
-  "timestamp": "invoice_date",
-  "item_id": "product_code",
-  "location_id": "branch_id",
-  "target": "units_sold"
-}
-```
-
-Schema mapping bisa pakai dua stages:
-
-```text
-RULE-BASED
-dtype
-column names
-cardinality
-statistics
-sample values
-       ↓
-if ambiguous
-       ↓
-LLM SEMANTIC MAPPING
-```
-
-Jangan kasih full CSV ke LLM.
-
-Kirim metadata saja:
-
-```json
-{
-  "column": "qty_out",
-  "dtype": "integer",
-  "sample": [12, 25, 9, 31],
-  "min": 0,
-  "max": 840,
-  "null_ratio": 0.001
-}
-```
-
-Much cheaper, faster, dan safer.
-
----
-
-# 3. Human confirmation sebelum pipeline lanjut
-
-UI:
-
-```text
-We detected your dataset:
-
-Date            transaction_date    99%
-Product         kode_barang         97%
-Demand          qty_out             95%
-Location        branch              93%
-Inventory       stock_on_hand       91%
-
-[ Confirm Mapping ]
-```
-
-Kalau salah:
-
-```text
-Demand:
-[ qty_out ▼ ]
-```
-
-user bisa override.
-
-Ini memberikan kalian dua keuntungan sekaligus:
-
-```text
-AI automation
-+
-enterprise reliability
-```
-
----
-
-# 4. Canonical schema jangan terlalu complicated
-
-Untuk hackathon, cukup:
-
-```python
-timestamp
-series_id
-target
-
-# optional
-item_id
-location_id
-inventory
-price
-promo
-lead_time
-moq
-```
-
-Contohnya:
-
-```text
-timestamp   series_id       target inventory promo
-2026-01-01  ABC-JKT         120    500       0
-2026-01-02  ABC-JKT         143    380       1
-2026-01-03  ABC-JKT         118    237       0
-```
-
-`series_id` kalian bisa generate:
-
-```python
-series_id = item_id + "__" + location_id
-```
-
-Kalau gak ada location:
-
-```python
-series_id = item_id
-```
-
----
-
-# 5. Data Cleaning Engine
-
-Aku akan sangat menghindari “AI cleans data.”
-
-Lebih credible:
-
-```text
-AI understands semantics.
-Code cleans data.
-```
-
-Pipeline:
-
-```text
-raw canonical data
-       ↓
-sort timestamp
-       ↓
-remove / aggregate duplicates
-       ↓
-detect frequency
-       ↓
-reindex timestamps
-       ↓
-handle missing values
-       ↓
-flag negatives
-       ↓
-flag anomalies
-       ↓
-check history length
-       ↓
-clean forecasting dataset
-```
-
-Dan setiap transformation disimpan dalam report:
-
-```json
-{
-  "rows_received": 154239,
-  "duplicates_found": 193,
-  "missing_timestamps": 82,
-  "negative_values": 7,
-  "series_removed": 11,
-  "forecastable_series": 417
-}
-```
-
-UI:
-
-```text
-DATA HEALTH
-
-82 / 100
-
-✓ Daily frequency detected
-✓ 428 series detected
-⚠ 193 duplicate records
-⚠ 82 missing timestamps
-⚠ 11 series have insufficient history
-```
-
-Ini actually bisa jadi salah satu screen paling convincing di demo.
-
----
-
-# 6. Demand segmentation
-
-Per:
-
-```text
-SKU × location
-```
-
-calculate:
-
-```text
-ADI
-CV²
-```
-
-Output:
-
-```json
-{
-  "series_id": "ABC__JKT",
-  "adi": 1.08,
-  "cv2": 0.21,
-  "demand_type": "smooth"
-}
-```
-
-Kemudian dashboard:
-
-```text
-DEMAND PORTFOLIO
-
-Smooth         48%
-Erratic        27%
-Intermittent   18%
-Lumpy           7%
-```
-
-Ini juga memberi user insight bahkan sebelum forecasting.
-
----
-
-# 7. Forecast model router
-
-Jangan bikin satu gigantic model function.
-
-Bikin adapter abstraction:
+Every model implements one interface, so swapping TimesFM for Chronos or a commercial checkpoint touches one file:
 
 ```python
 class ForecastModel:
-    def fit_predict(history, horizon):
-        ...
+    name: str
+    def forecast(self, series, horizon, covariates=None) -> Forecast: ...
 ```
 
-Implement:
+TimesFM loads once at startup as a singleton and is always called through `predict_batch`. Never per-series in a loop.
 
-```text
-TimesFMAdapter
-SeasonalNaiveAdapter
-CrostonAdapter
-TSBAdapter
+## Backtest and selection
+
+Two rolling windows. Not ten — 1,000 series × 4 models × 10 folds is 40,000 runs and no extra credit.
+
+Metrics: WAPE for smooth and erratic, MASE for intermittent and lumpy (WAPE denominators approach zero on sparse demand and the ranking becomes noise). Bias reported alongside, always.
+
+Selection rule, stated precisely because a judge will probe it:
+
+- Fewer than 3 validation points per series → pick per **segment**, apply across it
+- 3 or more → pick per **series**, but only when the margin exceeds the spread across folds
+- Otherwise fall back to the segment default
+
+Selecting a model on two observations is fitting noise. Saying so out loud is worth more than pretending otherwise.
+
+## Decision engine
+
+Forecast plus business parameters. Never invent a missing parameter — ask, or return the forecast alone.
+
+Parameters are entered **per category with bulk apply**, overridable per SKU. A mid-market ops lead cannot type lead time for 428 SKUs, and that is where a trial dies.
+
+```
+demand_over_lead_time = sum(forecast[0:lead_time])
+safety_stock          = z(service_level) * demand_std * sqrt(lead_time)
+required              = demand_over_lead_time + safety_stock
+raw_reorder           = max(0, required - current_inventory)
+recommended           = ceil(raw_reorder / moq) * moq
 ```
 
-Kemudian orchestrator:
+Two output modes off the same forecast:
 
-```python
-candidates = model_router(demand_type)
-
-for model in candidates:
-    forecast = model.forecast(...)
-    score = backtest(...)
+```
+ritel      -> recommended purchase order quantity
+manufaktur -> required production quantity -> raw material need (x BOM factor)
 ```
 
-Dengan demikian TimesFM bukan tightly coupled.
+Output is always explainable as a sum. No black box:
 
-Hari ini:
-
-```text
-TimesFM
 ```
-
-besok bisa:
-
-```text
-Chronos
-commercial foundation model
-custom model
-```
-
-tanpa rewrite sistem.
-
----
-
-# 8. Jangan backtest semua SKU × semua model × banyak folds
-
-Ini salah satu scope trap terbesar.
-
-Kalau ada:
-
-```text
-1,000 series
-×
-4 models
-×
-10 folds
-```
-
-jadi 40,000 forecasting runs.
-
-Untuk hackathon cukup:
-
-```text
-1–3 backtest windows
-```
-
-Misalnya:
-
-```text
-historical
-────────────────────────────────────────────
-
-train                validate
-████████████████████ ████
-
-      train                validate
-      ████████████████████ ████
-```
-
-Metrics:
-
-```text
-WAPE
-bias
-```
-
-Model selection:
-
-```text
-lowest WAPE
-+
-bias within acceptable threshold
-```
-
-Contoh:
-
-```text
-SKU A
-
-TimesFM
-WAPE 12.8%
-Bias +1.9%
-
-TSB
-WAPE 19.1%
-Bias -5.2%
-
-Seasonal Naive
-WAPE 23.4%
-
-→ SELECT TimesFM
-```
-
----
-
-# 9. Result storage
-
-Jangan recompute setiap dashboard refresh.
-
-Store output.
-
-Database sederhana:
-
-```text
-datasets
-jobs
-series_profiles
-forecasts
-recommendations
-```
-
-Contoh:
-
-```text
-datasets
-──────────────
-dataset_id
-filename
-created_at
-schema_mapping
-health_score
-```
-
-```text
-forecasts
-──────────────
-forecast_id
-job_id
-series_id
-timestamp
-forecast
-lower_bound
-upper_bound
-model_name
-wape
-bias
-```
-
-```text
-recommendations
-──────────────
-series_id
-stockout_risk
-days_until_stockout
-recommended_order_qty
-reason
-```
-
-SQLite udah cukup.
-
-Kalau mau kelihatan more production-ish:
-
-```text
-PostgreSQL
-```
-
-tapi **SQLite lebih aman untuk hackathon**.
-
----
-
-# 10. Inventory decision engine
-
-Jangan langsung:
-
-```text
-forecast = 10,000
-→ order 10,000
-```
-
-Decision layer harus ngerti context.
-
-Minimal:
-
-```text
-forecast over lead-time period
-+
-safety buffer
--
-current usable inventory
-```
-
-kemudian rounding:
-
-```text
-MOQ
-```
-
-Conceptually:
-
-```text
-Projected demand during lead time = 4,200
-Safety stock                    =   800
-Current inventory               = 1,700
-
-Required stock                  = 5,000
-
-Raw reorder:
-5,000 - 1,700 = 3,300
-
-MOQ = 500
-
-Recommended order:
-3,500 units
-```
-
-UI harus transparan:
-
-```text
-Recommended order
-3,500 units
-
-Why?
-────────────────────────
 Demand during lead time   4,200
 Safety buffer               800
 Current stock            -1,700
 MOQ adjustment             +200
+                        =  3,500
 ```
 
-Itu membuat AI tidak terasa seperti black box.
+## Value simulation
 
----
+The money slide. Run the same replenishment policy under both forecasts across the backtest windows and count outcomes, rather than comparing error metrics.
 
-# 11. REST API untuk output juga penting
-
-Jangan cuma input API.
-
-Enterprise software harus bisa **consume results**.
-
-Misalnya:
-
-```http
-GET /api/v1/forecast/ABC123
+```
+for each window, for each candidate forecast:
+    simulate replenishment
+    accumulate: fill_rate, stockout_events, avg_inventory_value, lost_sales_units
 ```
 
-response:
+Baseline is the customer's likely current practice — a moving average — not a strawman. Report the delta in rupiah using user-supplied margin and holding cost.
 
-```json
-{
-  "sku": "ABC123",
-  "location": "JKT01",
-  "model": "timesfm",
-  "forecast_horizon": 30,
-  "expected_demand": 8420,
-  "backtest_wape": 0.128
-}
+## Storage
+
+SQLite. Zero setup, and nobody scores database networking.
+
+```
+datasets        dataset_id, filename, created_at, schema_mapping, health_score, preset_matched
+jobs            job_id, dataset_id, status, progress, created_at
+series_profiles series_id, dataset_id, adi, cv2, demand_class, n_obs, censored_periods
+forecasts       forecast_id, job_id, series_id, timestamp, forecast, lower, upper,
+                model_name, wape, mase, bias
+recommendations series_id, mode, stockout_risk, days_until_stockout,
+                recommended_qty, explanation_json
 ```
 
-Kemudian:
+## API contract
 
-```http
-GET /api/v1/recommendations/ABC123
+Frozen at hour 2. Everyone codes against this.
+
+```
+POST /api/v1/ingest                          -> {dataset_id, status}
+GET  /api/v1/datasets/{id}/mapping           -> {fields[], confidence, preset_matched}
+POST /api/v1/datasets/{id}/mapping           -> {ok}
+GET  /api/v1/datasets/{id}/health            -> health report
+POST /api/v1/datasets/{id}/forecast          -> {job_id}
+GET  /api/v1/jobs/{job_id}                   -> {status, progress}
+GET  /api/v1/forecasts/{dataset_id}          -> paginated series forecasts
+GET  /api/v1/forecasts/{dataset_id}/{series} -> single series with history
+GET  /api/v1/recommendations/{dataset_id}    -> ranked action list
+GET  /api/v1/value/{dataset_id}              -> value simulation result
+POST /api/v1/alerts/slack                    -> {sent}
 ```
 
-```json
-{
-  "stockout_risk": "high",
-  "days_until_stockout": 8,
-  "recommended_order": 5000
-}
+Long work runs in FastAPI `BackgroundTasks` with status in SQLite. No Celery, no Redis.
+
+## Interfaces
+
+Dashboard, REST and MCP are three views of one service layer. Business logic lives in the service layer, never in an endpoint or an MCP tool.
+
+```
+           ┌── Dashboard (Next.js)
+           │
+service ───┼── REST API
+ layer     │
+           └── MCP server ──► agents, Slack, WhatsApp
 ```
 
-Sekarang ERP/company system bisa:
+### MCP tools
 
-```text
-ERP
- ↓
-your API
- ↓
-forecast
- ↓
-ERP dashboard
 ```
-
-tanpa dashboard kalian sama sekali.
-
----
-
-# 12. MCP layer
-
-MCP **wraps the same backend API**.
-
-Jangan kasih MCP access langsung ke DB/TimesFM.
-
-```text
-MCP Server
-    ↓
-FastAPI
-    ↓
-Forecasting platform
-```
-
-Tools:
-
-```text
+ingest_csv(path)                      -> dataset_id    # filesystem-capable agents only
+ingest_rows(rows[])                   -> dataset_id
 get_data_health(dataset_id)
-
-get_forecast(
-    sku,
-    location,
-    horizon
-)
-
-get_stockout_risk(
-    location
-)
-
-get_reorder_recommendation(
-    sku,
-    location
-)
+confirm_mapping(dataset_id, overrides)
+run_forecast(dataset_id, horizon)     -> job_id
+get_job(job_id)
+get_stockout_risk(location?, top_n=10)
+get_reorder_recommendation(sku, location)
+explain_forecast(series_id)           # which model won and why
+send_procurement_alert(series_ids[])  # write — requires confirmation
 ```
 
-Jadi AI assistant bisa:
+Reads run freely. Writes require human confirmation. Never return full series into an agent's context — top-N with an id to drill into.
 
-> Which products need immediate action?
+## Frontend
 
-MCP:
-
-```text
-get_stockout_risk()
+```
+/upload          drag CSV, or show the API contract
+/mapping         confirm detected fields, confidence per field
+/health          what we found and what to fix
+/dashboard       THE LANDING SURFACE — ranked action list
+/forecast/{id}   one series, history + forecast + why this model
 ```
 
-returns:
+The wizard is onboarding and happens once. `/dashboard` is the recurring surface: *these 12 things need ordering this week, this much each*. Charts are secondary to the list.
 
-```text
-12 high-risk products
+## Module layout
+
+```
+backend/app/
+├── main.py
+├── api/            ingest.py datasets.py forecasts.py recommendations.py
+├── schema/         profiler.py presets.py mapper.py canonical.py
+├── cleaning/       pipeline.py health.py
+├── enrich/         calendar.py censoring.py
+├── demand/         classifier.py
+├── forecasting/    base.py timesfm.py naive.py croston.py tsb.py router.py
+├── evaluation/     backtest.py metrics.py selection.py
+├── decision/       reorder.py production.py value_sim.py
+├── integrations/   slack.py mcp_server.py
+├── services/       ← business logic all three interfaces call
+└── db/             database.py models.py
+
+data/
+├── calendar_id.csv
+└── app.db
 ```
 
-User:
+## Deployment
 
-> What's the worst one?
+Hackathon: `uvicorn` + `next dev` on the L40S. Docker Compose at hour 22 only if ahead.
 
-MCP:
+Production story, which is a slide and not work:
 
-```text
-get_reorder_recommendation("ABC123")
+```
+SQLite          -> PostgreSQL
+local files     -> object storage
+BackgroundTasks -> queue + workers
+Docker Compose  -> Kubernetes on Cloudeka
+single L40S     -> autoscaled Deka GPU
+CSV / API       -> ERP / POS / WMS connectors
+demo key        -> tenant isolation + SQURA WAF
+demo URL        -> listed on LAMPU
 ```
 
-returns reasoning.
+## Not building
 
----
-
-# 13. Slack integration
-
-Untuk hackathon, jangan bikin Slack OAuth app kalau waktunya sempit.
-
-Pakai:
-
-```text
-Incoming webhook
-```
-
-Flow:
-
-```text
-Recommendation engine
-        ↓
-Slack adapter
-        ↓
-#procurement
-```
-
-Message:
-
-```text
-⚠ STOCKOUT RISK
-
-SKU: ABC-123
-Warehouse: Jakarta
-Projected stockout: 8 days
-
-Forecast demand: 8,420 units
-Current inventory: 4,100 units
-
-Recommended reorder:
-5,000 units
-
-Model: TimesFM
-Historical WAPE: 12.8%
-```
-
-Untuk demo bahkan bisa trigger lewat AI:
-
-> Send this recommendation to procurement.
-
-↓
-
-```text
-send_procurement_alert()
-```
-
-↓
-
-Slack notification.
-
----
-
-# 14. Full backend structure
-
-Aku akan organize repository kira-kira:
-
-```text
-/backend
-│
-├── api/
-│   ├── ingestion.py
-│   ├── forecast.py
-│   └── recommendations.py
-│
-├── ingestion/
-│   ├── csv_adapter.py
-│   └── json_adapter.py
-│
-├── schema/
-│   ├── profiler.py
-│   ├── mapper.py
-│   └── canonical.py
-│
-├── cleaning/
-│   ├── validation.py
-│   └── cleaning.py
-│
-├── segmentation/
-│   └── adi_cv2.py
-│
-├── forecasting/
-│   ├── timesfm.py
-│   ├── seasonal_naive.py
-│   ├── croston.py
-│   ├── tsb.py
-│   └── router.py
-│
-├── evaluation/
-│   └── backtest.py
-│
-├── inventory/
-│   └── reorder.py
-│
-├── integrations/
-│   ├── slack.py
-│   └── mcp.py
-│
-└── main.py
-```
-
-Frontend:
-
-```text
-/frontend
-│
-├── upload
-├── mapping
-├── data-health
-├── forecast
-└── recommendations
-```
-
----
-
-# 15. Deployment hackathon
-
-Aku tidak akan Kubernetes.
-
-Run:
-
-```text
-┌────────────────────────────────────────┐
-│            L40S SERVER                 │
-│                                        │
-│  Docker Compose                        │
-│                                        │
-│  frontend                              │
-│      │                                 │
-│      ▼                                 │
-│  FastAPI backend                       │
-│      │                                 │
-│      ├── CPU preprocessing             │
-│      ├── baseline models               │
-│      │                                 │
-│      └── TimesFM → GPU L40S            │
-│                                        │
-│  SQLite/Postgres                       │
-│                                        │
-│  MCP server                            │
-│                                        │
-└────────────────────────────────────────┘
-```
-
-Production story baru:
-
-```text
-Docker
- ↓
-Kubernetes / Cloudeka
- ↓
-Deka GPU
- ↓
-LAMPU distribution
-```
-
-Jangan habiskan hackathon melakukan production infra yang juri bahkan tidak akan lihat.
-
----
-
-# Yang sebenarnya kalian bangun
-
-Kalau diringkas, architecture kalian punya **empat adaptive layers**:
-
-| Layer                   | Pertanyaan yang dijawab                                          |
-| ----------------------- | ---------------------------------------------------------------- |
-| **Data adaptation**     | “Data perusahaan ini bentuknya gimana?”                          |
-| **Demand adaptation**   | “Demand SKU ini behaving seperti apa?”                           |
-| **Model adaptation**    | “Model mana yang historically paling cocok?”                     |
-| **Workflow adaptation** | “Perusahaan mau consume hasilnya lewat dashboard, API, atau AI?” |
-
-Dan itu menghasilkan flow yang menurutku paling clean untuk deck:
-
-```text
-          ANY ENTERPRISE DATA
-                  │
-          CSV / API / ERP
-                  ↓
-          ┌───────────────┐
-          │ Schema Adapter│
-          └───────┬───────┘
-                  ↓
-          Canonical Data Model
-                  ↓
-          Data Quality Engine
-                  ↓
-          Demand Intelligence
-           ADI + CV²
-                  ↓
-          Adaptive Model Router
-        ┌─────────┼─────────┐
-        ↓         ↓         ↓
-     TimesFM   Croston     TSB
-        └─────────┼─────────┘
-                  ↓
-          Historical Backtest
-                  ↓
-        Best Validated Forecast
-                  ↓
-          Inventory Decision
-                  ↓
-       ┌──────────┼──────────┐
-       ↓          ↓          ↓
-  Dashboard      API        MCP
-                             ↓
-                       Slack / AI
-```
-
-Dan satu detail yang menurutku penting untuk positioning: **jangan bilang “AI decides the best model.”** Bilang:
-
-> **“AI adapts the incoming enterprise schema; deterministic diagnostics characterize demand; historical backtesting validates the forecasting method.”**
-
-Itu terdengar jauh lebih technically mature, karena kalian jelas membedakan mana semantic AI reasoning, mana statistik, dan mana deterministic business logic.
-
-Untuk **3 orang × 24 jam**, aku akan menetapkan hard MVP boundary di: **CSV/API ingestion → schema mapping → cleaning → ADI/CV² → TimesFM + 2–3 lightweight baselines → limited backtest → forecast → reorder → dashboard**. **MCP + Slack masuk sebagai bonus integration setelah jalur itu stabil.**
-
-
-
----
-
-For **3 people × 24 hours**, aku akan pilih stack yang boring, fast, dan minim infra supaya waktu kalian habis di product logic, bukan deployment.
-
-| Layer                | Pilihan                                         | Kenapa                                                                       |
-| -------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
-| Frontend             | **Next.js + TypeScript + Tailwind + shadcn/ui** | Cepat bikin UI yang kelihatan enterprise/polished                            |
-| Backend              | **FastAPI + Python**                            | Semua forecasting/data science kalian Python, jadi nggak perlu bridge bahasa |
-| Data processing      | **Polars**                                      | Lebih cepat dan memory-efficient daripada pandas untuk CSV besar             |
-| Schema profiling     | **Polars + custom rules**                       | dtype, null %, cardinality, samples, date detection                          |
-| Semantic mapping     | **LLM API / Deka LLM kalau tersedia**           | Hanya mapping kolom ambigu, bukan cleaning                                   |
-| Canonical validation | **Pydantic**                                    | Enforce schema internal kalian                                               |
-| Forecasting          | **TimesFM-3**                                   | Main pretrained model                                                        |
-| Baselines            | **StatsForecast / custom Python**               | Seasonal Naive, Croston, TSB                                                 |
-| Backtesting          | **Custom Python + NumPy/Polars**                | Jangan install framework AutoML berat                                        |
-| Database             | **SQLite**                                      | Zero setup, cukup untuk hackathon                                            |
-| Raw file storage     | **Local `/data` folder**                        | Jangan tambah S3/MinIO kecuali wajib                                         |
-| Inventory engine     | **Pure Python**                                 | Transparent deterministic rules                                              |
-| REST integration     | **FastAPI**                                     | Input + output API                                                           |
-| MCP                  | **Python MCP SDK**                              | Wrapper di atas API/service functions                                        |
-| Slack                | **Incoming Webhook**                            | Paling cepat untuk demo                                                      |
-| Deployment           | **Docker Compose**                              | frontend + backend + model worker                                            |
-| GPU                  | **L40S**                                        | TimesFM inference                                                            |
-| Charts               | **Recharts**                                    | Cocok dengan Next.js dan cepat                                               |
-| Version control      | **GitHub**                                      | Obviously                                                                    |
-
-Jadi secara high-level:
-
-```text
-                         NEXT.JS
-                    Enterprise Dashboard
-                           │
-                           │ HTTP
-                           ▼
-                    ┌──────────────┐
-                    │   FASTAPI    │
-                    │              │
-CSV Upload ────────►│ ingestion    │◄──────── JSON / ERP API
-                    │ schema       │
-                    │ forecast     │
-                    │ decisions    │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-         Schema/Data    SQLite      MCP Server
-           Engine                        │
-              │                          ▼
-              │                     AI / Slack
-              ▼
-           POLARS
-              │
-              ▼
-       Canonical Dataset
-              │
-              ▼
-        Demand Classifier
-          ADI + CV²
-              │
-              ▼
-       Forecast Orchestrator
-       ┌──────┼───────┐
-       ▼      ▼       ▼
-   TimesFM  Croston   TSB
-       │      │       │
-       └──────┼───────┘
-              ▼
-           Backtest
-              │
-              ▼
-        Best Forecast
-              │
-              ▼
-       Inventory Engine
-              │
-              ▼
-      Forecast / Reorder API
-```
-
-### Backend: Python all the way
-
-Ini satu keputusan yang menurutku jangan kalian debat terlalu lama.
-
-```text
-Python 3.11/3.12
-FastAPI
-Polars
-Pydantic
-NumPy
-TimesFM
-StatsForecast
-```
-
-Jangan bikin backend Node lalu forecasting service Python kecuali kalian memang butuh. Itu cuma menambah:
-
-```text
-Node API
-   ↓
-Python API
-   ↓
-Model
-```
-
-padahal bisa:
-
-```text
-FastAPI
-   ↓
-Python forecasting code
-```
-
-Langsung.
-
-Project structure-nya bisa seperti ini:
-
-```text
-backend/
-│
-├── app/
-│   ├── main.py
-│   │
-│   ├── api/
-│   │   ├── ingestion.py
-│   │   ├── datasets.py
-│   │   ├── forecasts.py
-│   │   └── recommendations.py
-│   │
-│   ├── schema/
-│   │   ├── profiler.py
-│   │   ├── mapper.py
-│   │   └── canonical.py
-│   │
-│   ├── cleaning/
-│   │   └── pipeline.py
-│   │
-│   ├── demand/
-│   │   └── classifier.py
-│   │
-│   ├── forecasting/
-│   │   ├── timesfm.py
-│   │   ├── naive.py
-│   │   ├── croston.py
-│   │   ├── tsb.py
-│   │   └── router.py
-│   │
-│   ├── evaluation/
-│   │   └── backtest.py
-│   │
-│   ├── inventory/
-│   │   └── reorder.py
-│   │
-│   ├── integrations/
-│   │   ├── slack.py
-│   │   └── mcp.py
-│   │
-│   └── db/
-│       └── database.py
-```
-
-Yang bagus dari structure ini: **TimesFM cuma satu adapter**.
-
-Misalnya:
-
-```python
-class ForecastModel:
-    def forecast(self, series, horizon):
-        raise NotImplementedError
-```
-
-lalu:
-
-```python
-class TimesFMModel(ForecastModel):
-    ...
-
-class CrostonModel(ForecastModel):
-    ...
-
-class SeasonalNaiveModel(ForecastModel):
-    ...
-```
-
-Model router kalian tinggal melakukan:
-
-```python
-models = router.get_candidates(demand_type)
-
-for model in models:
-    prediction = model.forecast(...)
-    score = backtest(...)
-```
-
-Jauh lebih maintainable daripada forecasting logic bercampur di endpoint FastAPI.
-
-### Polars, bukan pandas
-
-Untuk hackathon biasa aku sering bilang pandas cukup. Tapi kalian secara eksplisit menjual:
-
-> “Upload enterprise CSV.”
-
-Jadi pakai **Polars** akan membantu kalau dikasih dataset lumayan besar.
-
-Contohnya:
-
-```python
-import polars as pl
-
-df = pl.read_csv("sales.csv")
-```
-
-Kalian bisa cepat dapat:
-
-```text
-row count
-null %
-unique values
-dtype
-min/max
-duplicates
-```
-
-untuk data profiler.
-
-Dan nanti pitch kalian bisa bilang ingestion layer dirancang untuk dataset besar tanpa perlu claim berlebihan.
-
-### SQLite > PostgreSQL untuk hackathon
-
-Aku akan sangat strongly pilih:
-
-```text
-SQLite
-```
-
-untuk 24 jam.
-
-Bukan karena PostgreSQL jelek, tapi kalian nggak memperoleh nilai hackathon berarti dari:
-
-```text
-database networking
-credentials
-container health
-migrations
-persistent volume
-```
-
-Database kalian cuma perlu menyimpan:
-
-```text
-datasets
-jobs
-schema mappings
-series metadata
-forecasts
-recommendations
-```
-
-SQLite bisa handle itu.
-
-Misalnya:
-
-```text
-forecast.db
-```
-
-dan selesai.
-
-Kalau masuk accelerator:
-
-```text
-SQLite → PostgreSQL
-```
-
-mudah.
-
-### Jangan pakai Celery/Redis dulu
-
-Forecast job kemungkinan tidak instant, jadi technically background job memang bagus.
-
-Tapi jangan langsung:
-
-```text
-FastAPI
- ↓
-Redis
- ↓
-Celery
- ↓
-Worker
-```
-
-Itu 3 moving parts lagi.
-
-Untuk hackathon, cukup:
-
-```text
-POST /forecast
-      ↓
-create job_id
-      ↓
-FastAPI BackgroundTask
-      ↓
-job status saved SQLite
-```
-
-Frontend polling:
-
-```text
-GET /jobs/{job_id}
-```
-
-response:
-
-```json
-{
-  "status": "forecasting",
-  "progress": 72
-}
-```
-
-Kalau sudah:
-
-```json
-{
-  "status": "completed"
-}
-```
-
-Untuk production baru pindah ke proper queue.
-
-### Frontend: Next.js kalau ada satu orang yang comfortable
-
-Aku pilih:
-
-```text
-Next.js
-TypeScript
-Tailwind
-shadcn/ui
-Recharts
-```
-
-karena UI kalian memang penting.
-
-Flow-nya bisa seperti:
-
-```text
-/upload
-   ↓
-/mapping
-   ↓
-/data-health
-   ↓
-/forecast
-   ↓
-/recommendations
-```
-
-Dan bikin satu dashboard:
-
-```text
-┌─────────────────────────────────────────────┐
-│ Dataset: PT ABC Sales                      │
-│ Data Health 82/100                         │
-├────────────────────┬────────────────────────┤
-│ Demand Types       │ Model Selection        │
-│                    │                        │
-│ Smooth 51%         │ TimesFM 63%            │
-│ Erratic 23%        │ TSB 21%                │
-│ Intermittent 18%   │ Croston 10%            │
-│ Lumpy 8%           │ Naive 6%               │
-├────────────────────┴────────────────────────┤
-│ Forecast chart                              │
-├─────────────────────────────────────────────┤
-│ ⚠ 12 SKU at stockout risk                  │
-│                                             │
-│ SKU ABC123 — reorder 5,000 units            │
-└─────────────────────────────────────────────┘
-```
-
-Kalau **nggak ada seorang pun yang comfortable React**, jangan maksa.
-
-Use:
-
-```text
-Streamlit
-```
-
-Seriously.
-
-Better ada polished-enough working app daripada 8 jam habis debug React state.
-
-Tapi kalau salah satu dari kalian memang web dev, **Next.js wins** karena product kalian jadi kelihatan jauh lebih commercial.
-
-### Schema understanding: hybrid, jangan full LLM
-
-Aku akan bikin:
-
-```text
-Polars profiler
-      ↓
-rule-based detection
-      ↓
-LLM only when ambiguous
-```
-
-Misalnya obvious:
-
-```text
-date → timestamp
-sales_quantity → target
-```
-
-nggak perlu LLM.
-
-Tapi:
-
-```text
-qty_out
-movement
-net_disp
-```
-
-bisa dikirim ke LLM bersama metadata.
-
-LLM return:
-
-```json
-{
-  "column": "qty_out",
-  "role": "target",
-  "confidence": 0.94
-}
-```
-
-Lalu frontend user confirm.
-
-Jika Lintasarta memberi akses Deka LLM, layer ini adalah tempat paling natural menggunakannya.
-
-### TimesFM process
-
-Karena kalian punya L40S, ideally model load **sekali saat server start**.
-
-Jangan:
-
-```python
-@app.post("/forecast")
-def forecast():
-    model = load_timesfm()   # BAD
-```
-
-karena setiap request load checkpoint lagi.
-
-Better:
-
-```text
-Backend boot
-   ↓
-load TimesFM
-   ↓
-GPU memory stays allocated
-   ↓
-requests use existing model
-```
-
-Bahkan bisa punya:
-
-```text
-FastAPI
-   ↓
-ForecastService
-   ↓
-TimesFM singleton
-```
-
-Untuk hackathon itu sudah cukup.
-
-### MCP
-
-MCP server jangan contain forecasting logic.
-
-Strukturnya:
-
-```text
-AI Client
-   ↓
-MCP Server
-   ↓
-your service/API
-```
-
-Tools:
-
-```python
-get_forecast(...)
-get_stockout_risk(...)
-get_reorder_recommendation(...)
-get_data_health(...)
-```
-
-Internally mereka cuma call existing service functions.
-
-Jadi MCP adalah **interface layer**, bukan duplicate backend.
-
-### Slack
-
-Hackathon version:
-
-```text
-Slack Incoming Webhook
-```
-
-Jangan OAuth app unless you're already done.
-
-Environment variable:
-
-```text
-SLACK_WEBHOOK_URL=...
-```
-
-Python:
-
-```python
-requests.post(
-    SLACK_WEBHOOK_URL,
-    json={"text": message}
-)
-```
-
-Done.
-
-Demo udah cukup convincing.
-
-### Docker
-
-Satu `docker-compose.yml`:
-
-```text
-services:
-
-frontend
-    Next.js
-    port 3000
-
-backend
-    FastAPI
-    port 8000
-    GPU access
-    mounted ./data
-```
-
-SQLite bisa tinggal:
-
-```text
-./data/app.db
-```
-
-Jadi bahkan sebenarnya **dua containers cukup**.
-
-Kalau TimesFM dependency bentrok dengan backend baru pecah:
-
-```text
-frontend
-backend
-forecast-worker
-```
-
-Tapi default-ku jangan pecah dulu.
-
-### Jangan pakai ini selama 24 jam
-
-Aku specifically akan avoid **Kubernetes, Kafka, Airflow, Spark, Ray, MLflow, feature store, vector database, Redis/Celery kecuali absolutely needed, microservice architecture, full ERP integration, dan custom model training**.
-
-Semua teknologi itu bisa dibenarkan untuk production. Tapi untuk hackathon, mereka mostly menghasilkan diagram keren + bugs.
-
-Pitch production architecture boleh:
-
-```text
-Hackathon                     Production
-
-SQLite              →        PostgreSQL
-local files         →        Object Storage
-BackgroundTasks     →        Queue/workers
-Docker Compose      →        Kubernetes
-single GPU          →        autoscaled Deka GPU
-CSV/API             →        ERP/POS/WMS connectors
-Slack webhook       →        enterprise integrations
-```
-
-Itu justru menunjukkan kalian tahu **bedanya prototype architecture dan production architecture**.
-
-Dan kalau aku freeze stack kalian sekarang, pilihanku adalah:
-
-> **Next.js + Tailwind/shadcn → FastAPI → Polars/Pydantic → TimesFM + StatsForecast → SQLite → Python MCP SDK + Slack webhook → Docker Compose → NVIDIA L40S.**
-
-Satu stack, satu language untuk seluruh intelligence layer, sedikit dependencies, dan cukup lengkap untuk menunjukkan **CSV/API → adaptive forecasting → validated model → inventory decision → API/MCP/Slack** dalam 24 jam.
+Fine-tuning or retraining of any kind. LightGBM/XGBoost. Real ERP connectors. Kubernetes. Auth beyond a demo key. Multi-tenancy. Celery/Redis. Postgres. Arbitrary format support beyond CSV and JSON.
