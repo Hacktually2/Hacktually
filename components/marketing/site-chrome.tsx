@@ -31,6 +31,7 @@ const NAV = [
   { href: "/#branches", label: "Branch access" },
   { href: "/#calendar", label: "Indonesian demand" },
   { href: "/#deployment", label: "Deployment" },
+  { href: "/#pricing", label: "Pricing" },
 ];
 
 /**
