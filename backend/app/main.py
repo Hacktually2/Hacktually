@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from .api.routes import router
 from . import security
 from .db import database as db
+from .evaluation import fast_backtest
 from .integrations import notify
 from .forecasting.router import available_model_names, foundation_status
 
@@ -111,4 +112,7 @@ def health():
         },
         "models_available": available_model_names(),
         "foundation_models": foundation_status(),
+        # Visible on the status endpoint on purpose. A service validating on a
+        # sample should never be something you have to read the code to find out.
+        "mock_mode": fast_backtest.mock_enabled(),
     }

@@ -57,6 +57,9 @@ class ForecastRequest(BaseModel):
     horizon: int = 30
     use_calendar: bool = True
     mode: DecisionMode = DecisionMode.RITEL
+    # Sampled backtest instead of the full one. None defers to MOCK_MODE, so a
+    # demo box can be configured once while a single run stays overridable.
+    mock: bool | None = None
 
 
 class ReconcileRequest(BaseModel):
@@ -283,7 +286,9 @@ def start_forecast(dataset_id: str, body: ForecastRequest, background: Backgroun
 
     def run() -> None:
         try:
-            svc.run_forecast(dataset_id, body.horizon, job_id, body.use_calendar)
+            svc.run_forecast(
+                dataset_id, body.horizon, job_id, body.use_calendar, body.mock
+            )
             db.execute(
                 "UPDATE jobs SET status = 'completed', progress = 100, updated_at = ? WHERE job_id = ?",
                 (_now(), job_id),

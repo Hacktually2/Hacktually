@@ -40,6 +40,7 @@ from ..decision import value_sim
 from ..demand.classifier import portfolio_summary, profile_series
 from ..enrich import calendar as calendar_mod
 from ..enrich import censoring
+from ..evaluation import fast_backtest
 from ..evaluation.backtest import evaluate_batched, segment_defaults, select_model
 from ..forecasting.baselines import MovingAverageModel
 from ..forecasting.router import candidates_for
@@ -706,12 +707,43 @@ def prepare(dataset_id: str) -> dict:
 
 def get_health(dataset_id: str) -> dict:
     row = db.query_one(
-        "SELECT health_report FROM datasets WHERE dataset_id = ?", (dataset_id,)
+        "SELECT health_report, backtest_report FROM datasets WHERE dataset_id = ?",
+        (dataset_id,),
     )
     if not row:
         raise KeyError(dataset_id)
-    report = db.from_json(row["health_report"])
-    return report or prepare(dataset_id)
+    report = db.from_json(row["health_report"]) or prepare(dataset_id)
+
+    # Merged in at read time rather than written into health_report, because
+    # prepare() owns that column and runs before any forecast exists.
+    validation = db.from_json(row["backtest_report"])
+    if validation:
+        report = {**report, "validation": validation}
+        if validation.get("mode") == "sampled" and validation.get("estimated"):
+            report = {
+                **report,
+                "findings": [
+                    *report.get("findings", []),
+                    {
+                        "id": "sampled_validation",
+                        "severity": "warning",
+                        "level": "warning",
+                        "title": "Accuracy figures are partly estimated",
+                        "detail": (
+                            f"{validation['sampled']} of {validation['total']} series were "
+                            f"backtested directly. The other {validation['estimated']} carry "
+                            "their demand class's sampled average, so per-item accuracy is "
+                            "indicative. Model choice is unaffected — it is made per segment."
+                        ),
+                        "action": "Re-run with full validation before quoting these numbers.",
+                        "text": (
+                            f"Sampled validation: {validation['sampled']} of "
+                            f"{validation['total']} series backtested directly"
+                        ),
+                    },
+                ],
+            }
+    return report
 
 
 # ---------------------------------------------------------------- forecasting
@@ -746,8 +778,15 @@ def run_forecast(
     horizon: int = DEFAULT_HORIZON,
     job_id: str | None = None,
     use_calendar: bool = True,
+    mock: bool | None = None,
 ) -> dict:
-    """The core run: segment, route, backtest, select, forecast, decide, value."""
+    """The core run: segment, route, backtest, select, forecast, decide, value.
+
+    `mock` swaps the full backtest for a sampled one — see
+    `evaluation/fast_backtest.py`. None means take it from MOCK_MODE, so a
+    deployment can set it once and a single request can still override it
+    either way.
+    """
     def progress(pct: int, stage: str) -> None:
         if job_id:
             db.execute(
@@ -786,17 +825,30 @@ def run_forecast(
     seasonal_period = frequency.seasonal_period
 
     progress(20, "backtesting candidate models")
-    evaluations = evaluate_batched(
-        series_ids,
-        histories,
-        profiles,
-        candidates_for,
+    use_mock = fast_backtest.mock_enabled() if mock is None else mock
+    backtest_report: dict | None = None
+    backtest_args = dict(
         seasonal_period=seasonal_period,
         horizon_for=lambda values: min(horizon, max(7, len(values) // 4)),
         covariates=covariates,
         progress=lambda fraction: progress(20 + int(fraction * 30), "backtesting"),
     )
 
+    if use_mock:
+        # Same backtest, representative sample. The progress callback is passed
+        # through unchanged, so the processing screen shows the validating step
+        # running its full course — it just finishes in seconds.
+        evaluations, backtest_report = fast_backtest.evaluate_sampled(
+            series_ids, histories, profiles, candidates_for, **backtest_args
+        )
+    else:
+        evaluations = evaluate_batched(
+            series_ids, histories, profiles, candidates_for, **backtest_args
+        )
+
+    estimated_series: set[str] = (
+        backtest_report["estimated_series"] if backtest_report else set()
+    )
     defaults = segment_defaults(evaluations)
 
     progress(55, "selecting models and forecasting")
@@ -805,8 +857,6 @@ def run_forecast(
     final_forecasts: dict[str, np.ndarray] = {}
     # Backtest RMSE of the winning model, per series. Safety stock is sized on
     # this, so a model that predicts well earns a smaller buffer.
-    error_std: dict[str, float | None] = {}
-    # Backtest error per series, used to size safety stock in the decision engine.
     error_std: dict[str, float | None] = {}
     model_runs = 0
 
@@ -818,6 +868,15 @@ def run_forecast(
         profile = profiles[series_id]
         default = defaults.get(profile.demand_class)
         model_name, reason = select_model(evaluation, default)
+
+        # Never let a sampled figure read as a measured one. The metrics stored
+        # below are this series' demand-class means, not its own backtest, and
+        # the reason is the only place a reader would find that out.
+        if series_id in estimated_series:
+            reason = (
+                f"{reason} — estimated from a "
+                f"{backtest_report['sampled']}-series sample, not backtested directly"
+            )
 
         from ..forecasting.router import get_model
 
@@ -947,12 +1006,27 @@ def run_forecast(
         (dataset_id, _now(), len(series_ids), len(forecast_rows), model_runs),
     )
 
+    # Stored so /health can say how this run was validated long after the job
+    # row has gone. A set is not JSON, and the ids are already in each
+    # selection's reason, so only the counts are kept.
+    stored_report = (
+        {k: v for k, v in backtest_report.items() if k != "estimated_series"}
+        if backtest_report
+        else {"mode": "full", "sampled": len(series_ids), "estimated": 0,
+              "total": len(series_ids)}
+    )
+    db.execute(
+        "UPDATE datasets SET backtest_report = ? WHERE dataset_id = ?",
+        (db.to_json(stored_report), dataset_id),
+    )
+
     progress(100, "done")
     return {
         "dataset_id": dataset_id,
         "series_forecast": len(series_ids),
         "horizon": horizon,
         "model_mix": model_mix(dataset_id),
+        "validation": stored_report,
     }
 
 
