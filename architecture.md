@@ -179,13 +179,19 @@ Segmentation does not pick the model. It picks which models are allowed to compe
 ## Model router
 
 ```
-smooth       -> TimesFM, SeasonalNaive
-erratic      -> TimesFM, SeasonalNaive
-intermittent -> TimesFM, TSB, SeasonalNaive
-lumpy        -> TimesFM, Croston, SeasonalNaive
+smooth       -> TiRex-2, TimesFM, SeasonalNaive, MovingAverage, +calendar variants
+erratic      -> TiRex-2, TimesFM, SeasonalNaive, MovingAverage, +calendar variants
+intermittent -> TiRex-2, TimesFM, TSB, Croston, MovingAverage
+lumpy        -> TiRex-2, TimesFM, Croston, TSB, MovingAverage
 ```
 
-Every model implements one interface, so swapping TimesFM for Chronos or a commercial checkpoint touches one file:
+Two foundation models, deliberately. **TiRex-2 (Apache-2.0) is the production engine**; TimesFM-3 runs as a benchmark because its weights are non-commercial and a product cannot ship on them. Both take past and future-known covariates, so the Indonesian calendar feeds either.
+
+`moving_average` competes everywhere because it is the customer's current practice. A backtest that excludes the incumbent is not a backtest.
+
+The `+calendar` variants wrap a base model with an Indonesian seasonality correction estimated from that series' own history. They exist because **only the foundation models consume covariates natively** — without the wrapper the calendar layer contributes nothing whenever neither foundation model loads, which would make the one real differentiator hostage to a checkpoint.
+
+Every model implements one interface, so swapping an engine touches one file:
 
 ```python
 class ForecastModel:
@@ -193,7 +199,7 @@ class ForecastModel:
     def forecast(self, series, horizon, covariates=None) -> Forecast: ...
 ```
 
-TimesFM loads once at startup as a singleton and is always called through `predict_batch`. Never per-series in a loop.
+Foundation models load once at startup as singletons and are always called in batch. Never per-series in a loop — that is what stalls a demo on stage.
 
 ## Backtest and selection
 
