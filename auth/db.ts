@@ -124,6 +124,12 @@ export const UPLOAD_DIR = path.join(DATA_DIR, "uploads", "auth");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const db = new DatabaseSync(path.join(DATA_DIR, "auth.db"));
+// FIRST, before anything that takes a lock. `next build` collects pages in
+// parallel workers and `next dev` may hold the file at the same time; switching
+// the journal mode itself needs a brief exclusive lock, so a busy timeout set
+// after it is already too late and the loser of that race dies with
+// SQLITE_BUSY ("database is locked") instead of waiting a few milliseconds.
+db.exec("PRAGMA busy_timeout = 5000");
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 
@@ -609,6 +615,41 @@ export function visibleForecastProjects(
   );
 
   return new Set(candidateIds.filter((id) => claimed.get(id) ?? true));
+}
+
+/**
+ * The locations this user may see inside a forecasting project, or null for
+ * "no restriction".
+ *
+ * Used to scope the in-app assistant: it is handed only the rows the person
+ * looking at it is entitled to, so the model never sees another branch's
+ * numbers and cannot quote them back.
+ *
+ * Matching a branch `code` against a row's `location_id` is sound for any
+ * dataset that came through this app: the column the owner confirmed as the
+ * branch id is the same column the forecasting service maps to `location_id`.
+ * A dataset pushed straight into that service has no branch claiming it and is
+ * unrestricted here, which is the same rule `requireForecastAccess` applies.
+ *
+ * This narrows what the assistant reads. It is not a substitute for the backend
+ * filtering by location — see gap B11 in migration-report.md.
+ */
+export function accessibleLocations(
+  userId: string,
+  forecastProjectId: string,
+): string[] | null {
+  const claiming = db
+    .prepare(
+      `SELECT b.code, (p.owner_id = ?1 OR a.user_id IS NOT NULL) AS allowed
+       FROM branches b
+       JOIN projects p           ON p.id = b.project_id
+       LEFT JOIN branch_access a ON a.branch_id = b.id AND a.user_id = ?1
+       WHERE b.forecast_project_id = ?2`,
+    )
+    .all(userId, forecastProjectId) as Row[];
+
+  if (claiming.length === 0) return null;
+  return claiming.filter((row) => num(row, "allowed") === 1).map((row) => text(row, "code"));
 }
 
 export function hasBranchAccess(userId: string, branchId: string): boolean {

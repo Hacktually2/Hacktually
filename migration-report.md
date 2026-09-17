@@ -315,6 +315,54 @@ could disagree with the first.
 
 ---
 
+## 4b. MCP — what was built on top of it
+
+The MCP server (`backend/app/integrations/mcp_server.py`) was not touched. Three frontend
+surfaces were built from what it already exposes.
+
+**Agent access** — an owner-only tab on Team & access. Copyable Claude Desktop / Cursor
+config with the real absolute path, the nine-tool catalogue split into reads and the one
+write, and the install line for the MCP SDK. Managers cannot reach it.
+
+**Procurement alert** — `POST /api/v1/alerts/slack`, which had no frontend at all. Selecting
+at-risk rows, reviewing every item, then sending; the message the backend reports sending is
+shown back verbatim.
+
+**In-app assistant** — a chat panel in the project bar. Five read tools mirroring the MCP
+read tools, over REST, through the same service layer. No write tool: the alert stays a
+button a person presses.
+
+### MCP gaps for the backend
+
+**M1 — `mcp` is not a declared dependency.** It is absent from `requirements.txt` and
+`requirements.lock.txt`, so `python -m app.integrations.mcp_server` fails with
+`ModuleNotFoundError` on a clean environment. The README says to install `"mcp[cli]"`
+separately; an optional extra in the requirements file would make the server reproducible.
+
+**M2 — `POST /api/v1/alerts/slack` has no dry run, but `send_procurement_alert` does.** The
+MCP tool guarantees a human sees the exact message first (`confirmed=False` returns a
+preview). REST sends on the first call. The web app keeps the guarantee by confirming the
+*item list* instead, but it cannot show the literal Slack text beforehand, because
+`format_stockout_alert` is backend-only. A `?dry_run=true` returning `{sent: false, message}`
+would let both interfaces make the same promise.
+
+**M3 — `run_forecast` is synchronous over MCP, queued over REST.** The REST route returns a
+`job_id` and runs in the background; the MCP tool blocks for the whole pipeline. Most MCP
+clients time out well before a large dataset finishes. Returning a `job_id` plus a
+`get_job_status` tool would match the REST behaviour.
+
+**M4 — MCP has no auth and no branch scoping.** A connected agent reads every dataset and
+every branch, including ones the owner has not granted to anyone. This is gap B11 through a
+second door, and it is worse here: `ingest_csv` reads any path the server process can see.
+The in-app assistant *is* scoped — it runs inside a session and is handed only the locations
+the viewer can access — which shows the scoping is possible once the service accepts a
+location filter.
+
+**M5 — MCP tools return `json.dumps` strings.** Fine for a model, but a client cannot use the
+shape. Structured content would let a UI render tool results directly.
+
+---
+
 ## 5. Smaller notes for the backend
 
 - **`history_start` / `history_end` are naive datetimes** (`"2024-01-01 00:00:00"`), not

@@ -6,7 +6,9 @@ import type {
   ScenarioInput,
   ScenarioOutcome,
 } from "@/app/dummy-data/types";
-import { requireSession } from "@/lib/session";
+import { requireForecastAccess, requireSession } from "@/lib/session";
+import { backend } from "@/lib/backend/client";
+import { attempt } from "@/lib/backend/source";
 
 /**
  * Runs a what-if scenario. Stands in for
@@ -38,4 +40,52 @@ export async function savePlanningParameters(
 ): Promise<{ ok: true }> {
   await requireSession();
   return { ok: true };
+}
+
+/* ------------------------------------------------------- procurement alert */
+
+export type AlertState = {
+  error: string | null;
+  /** The message the backend says it sent, verbatim. Null before sending. */
+  result: { sent: boolean; message: string; reason: string | null } | null;
+};
+
+/**
+ * Sends a stockout alert to the procurement channel. THE ONE WRITE.
+ *
+ * Mirrors the guarantee the MCP tool makes in `backend/app/integrations/
+ * mcp_server.py`: an agent may recommend a purchase order, a person raises it.
+ * There the agent must call once to preview and again with `confirmed=True`.
+ * `POST /api/v1/alerts/slack` has no such dry run — it sends on the first call —
+ * so the confirmation happens in the UI instead: the user sees every item that
+ * will be alerted on, and this action only runs after they agree to that list.
+ *
+ * What they cannot preview is the exact Slack formatting, which only the
+ * backend knows. So the message it reports sending is shown back afterwards,
+ * verbatim, as the record of what went out.
+ */
+export async function sendProcurementAlert(
+  projectId: string,
+  datasetId: string,
+  seriesIds: string[],
+): Promise<AlertState> {
+  // Reachable by direct POST, and it is a write to an outside channel, so the
+  // branch check is repeated here rather than assumed from the page.
+  await requireForecastAccess(projectId);
+
+  if (seriesIds.length === 0) {
+    return { error: "Select at least one item to alert on.", result: null };
+  }
+
+  const sent = await attempt(() => backend.sendSlackAlert(datasetId, seriesIds));
+  if (!sent.ok) return { error: sent.error, result: null };
+
+  return {
+    error: null,
+    result: {
+      sent: sent.data.sent,
+      message: sent.data.message ?? "",
+      reason: sent.data.reason ?? null,
+    },
+  };
 }

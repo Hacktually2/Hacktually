@@ -31,6 +31,7 @@ import {
   OctagonAlert as LuOctagonAlert,
   Plus as LuPlus,
   Search as LuSearch,
+  Send as LuSend,
   Settings as LuSettings,
   ShieldCheck as LuShieldCheck,
   Sun as LuSun,
@@ -67,6 +68,7 @@ export const AlertTriangle = withDefaults(LuTriangleAlert);
 export const AlertOctagon = withDefaults(LuOctagonAlert);
 export const Clock = withDefaults(LuClock);
 export const Search = withDefaults(LuSearch);
+export const Send = withDefaults(LuSend);
 export const Upload = withDefaults(LuUpload);
 export const FileText = withDefaults(LuFileText);
 export const X = withDefaults(LuX);

@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Project } from "@/app/dummy-data/types";
 import { ChevronDown, Database, Plus, Upload } from "@/components/ui/icons";
 import { formatDateTime, formatNumber } from "@/lib/format";
+import { AssistantPanel } from "@/components/dashboard/assistant-panel";
 import { DashboardTabs } from "./dashboard-tabs";
 
 /**
@@ -107,7 +108,12 @@ export function ProjectBar({
           </dl>
         </div>
 
-        {showTabs && <DashboardTabs base={base} />}
+        <div className="flex items-center gap-3">
+          {/* Sits in the project bar so it is reachable from every tab and
+              always knows which project the question is about. */}
+          <AssistantPanel projectId={project.project_id} />
+          {showTabs && <DashboardTabs base={base} />}
+        </div>
       </div>
     </div>
   );

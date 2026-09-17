@@ -11,6 +11,7 @@ import { FilterBar, type FilterSpec } from "@/components/dashboard/filter-bar";
 import { InventoryWorkspace } from "@/components/dashboard/inventory-workspace";
 import { PlanningParametersButton } from "@/components/dashboard/planning-parameters";
 import { PostureStrip } from "@/components/dashboard/posture-strip";
+import { ProcurementAlert } from "@/components/dashboard/procurement-alert";
 import { ScenarioSimulator } from "@/components/dashboard/scenario-simulator";
 import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
@@ -133,6 +134,19 @@ export default async function SupplyChainPage({
           description="Select a row to see why an item is flagged and how its order quantity was reached."
           padded={false}
           footer="Status and recommended quantities come from the decision engine. Sorting and search do not change them."
+          action={
+            <ProcurementAlert
+              projectId={projectId}
+              datasetId={project.dataset_id}
+              // Only what the engine flagged, and only where it wants an order.
+              // Alerting on a healthy item trains people to ignore the channel.
+              rows={supply.rows.filter(
+                (row) =>
+                  (row.risk === "at_risk" || row.risk === "critical") &&
+                  row.recommended_qty > 0
+              )}
+            />
+          }
         >
           <InventoryWorkspace rows={supply.rows} />
         </Panel>

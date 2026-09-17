@@ -7,6 +7,7 @@ import { Button, ButtonLink } from "@/components/ui/button";
 import { AlertTriangle, Check, Clock, Database, Layers, Shield, X } from "@/components/ui/icons";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatNumber } from "@/lib/format";
+import { AgentAccess } from "./agent-access";
 import { CopyLink } from "./copy-link";
 import { InviteManager } from "./invite-manager";
 
@@ -20,9 +21,17 @@ export const metadata: Metadata = { title: "Team & access" };
  * they are waiting on. `requireProjectAccess` decides which, and a manager with
  * no branch in this project never gets here at all.
  */
-export default async function TeamPage({ params }: PageProps<"/projects/[projectId]/team">) {
-  const { projectId } = await params;
+export default async function TeamPage({
+  params,
+  searchParams,
+}: PageProps<"/projects/[projectId]/team">) {
+  const [{ projectId }, query] = await Promise.all([params, searchParams]);
   const { user, project, branches, isOwner } = await requireProjectAccess(projectId);
+
+  // Agent access is an owner decision — a connected agent is not branch-scoped,
+  // so showing it to a manager would hand them a way around their own grant.
+  const raw = query.tab;
+  const tab = (Array.isArray(raw) ? raw[0] : raw) === "agent" && isOwner ? "agent" : "people";
 
   return (
     <main className="layout-shell flex-1 py-10">
@@ -47,12 +56,57 @@ export default async function TeamPage({ params }: PageProps<"/projects/[project
         }
       />
 
-      {isOwner ? (
+      {isOwner && (
+        <nav className="mt-6 flex gap-1 border-b border-border-subtle" aria-label="Team sections">
+          <TabLink projectId={projectId} tab="people" active={tab === "people"}>
+            People &amp; branches
+          </TabLink>
+          <TabLink projectId={projectId} tab="agent" active={tab === "agent"}>
+            Agent access
+          </TabLink>
+        </nav>
+      )}
+
+      {tab === "agent" ? (
+        <div className="mt-6">
+          <AgentAccess repoRoot={process.cwd()} />
+        </div>
+      ) : isOwner ? (
         <OwnerView projectId={projectId} project={project} branches={branches} />
       ) : (
         <ManagerView projectId={projectId} userId={user.id} branches={branches} />
       )}
     </main>
+  );
+}
+
+/**
+ * A tab. A link, not a button — the section is in the URL, so it survives a
+ * reload and can be linked to directly.
+ */
+function TabLink({
+  projectId,
+  tab,
+  active,
+  children,
+}: {
+  projectId: string;
+  tab: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={`/projects/${projectId}/team?tab=${tab}`}
+      aria-current={active ? "page" : undefined}
+      className={`-mb-px border-b-2 px-3 py-2 text-body-sm font-semibold transition-colors duration-(--duration-fast) ${
+        active
+          ? "border-brand-blue text-brand-deep"
+          : "border-transparent text-ink-secondary hover:text-brand-deep"
+      }`}
+    >
+      {children}
+    </Link>
   );
 }
 
