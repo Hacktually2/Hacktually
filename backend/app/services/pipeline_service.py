@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..canonical import ALL_FIELDS as ALL_CANONICAL
 from ..canonical import (
     BusinessParams,
     CATEGORY,
@@ -29,7 +30,7 @@ from ..canonical import (
     split_series_id,
 )
 from ..cleaning import health as health_mod
-from ..cleaning.pipeline import CleaningReport, canonicalize, clean
+from ..cleaning.pipeline import SOURCE_RANK_COL, CleaningReport, canonicalize, clean
 from ..db import database as db
 from ..decision import reorder as reorder_mod
 from ..decision import hierarchy as hierarchy_mod
@@ -268,14 +269,110 @@ def get_mapping(dataset_id: str) -> dict:
     }
 
 
+def read_columns(path: Path) -> list[str]:
+    """Column names as the mapper sees them, without reading the whole file.
+
+    Reshaped files report their long-form columns (__period__, __value__), since
+    those are what a mapping refers to.
+    """
+    try:
+        if path.suffix.lower() in (".json", ".ndjson"):
+            return list(pl.read_json(path).columns)
+        head = pl.read_csv(
+            path, n_rows=5, infer_schema_length=5, ignore_errors=True,
+            truncate_ragged_lines=True,
+        )
+        head, _ = reshape_mod.reshape(head)
+        return list(head.columns)
+    except Exception:  # noqa: BLE001 — fall back to whatever the mapping already knows
+        return []
+
+
+IGNORE = "ignore"
+
+
+def _normalise_overrides(
+    overrides: dict[str, str] | None, columns: list[str]
+) -> tuple[dict[str, str], set[str]]:
+    """Accept overrides in either direction; return (canonical -> column, columns to unmap).
+
+    The frontend contract sends { source_column: canonical_key } — each review row
+    is a column with a dropdown of fields, and "ignore" drops it. Internal callers
+    and the MCP tool send { canonical: source_column }.
+
+    Before this, the API only understood the internal direction, so every
+    correction made in the review screen was silently discarded: no error, the
+    mapping simply never changed.
+
+    Direction cannot be inferred from names alone — in the WFP file `price` is both
+    a column and a canonical field. So it is decided against the columns that
+    actually exist in the file: in the contract direction the KEYS are columns, in
+    the internal direction the VALUES are.
+    """
+    if not overrides:
+        return {}, set()
+
+    known = set(columns)
+    canonical_names = set(ALL_CANONICAL) | {IGNORE}
+
+    keys_are_columns = all(k in known for k in overrides)
+    values_are_columns = all((not v) or v in known for v in overrides.values())
+    values_are_fields = all((v or IGNORE) in canonical_names for v in overrides.values())
+
+    # Contract direction wins a genuine tie: it is the documented API.
+    if keys_are_columns and values_are_fields:
+        by_canonical: dict[str, str] = {}
+        drop: set[str] = set()
+        for column, canonical in overrides.items():
+            if not canonical or canonical == IGNORE:
+                drop.add(column)
+            else:
+                by_canonical[canonical] = column
+        return by_canonical, drop
+
+    if values_are_columns:
+        return {k: v for k, v in overrides.items() if v}, {
+            k for k, v in overrides.items() if not v
+        }
+
+    unknown = sorted(k for k in overrides if k not in known and k not in canonical_names)
+    raise ValueError(
+        "could not read overrides: expected { source_column: canonical_key }"
+        + (f"; unknown columns {unknown}" if unknown else "")
+    )
+
+
 def _apply_overrides(
-    mapping: SchemaMapping, overrides: dict[str, str] | None
+    mapping: SchemaMapping,
+    overrides: dict[str, str] | None,
+    columns: list[str] | None = None,
 ) -> SchemaMapping:
+    """Apply user corrections, keeping one column per field and one field per column."""
+    if not overrides:
+        return mapping
+
+    by_canonical, drop_columns = _normalise_overrides(overrides, columns or [])
+    reassigned = set(by_canonical.values())
+
+    fields = {f.canonical: f for f in mapping.fields}
     for field in mapping.fields:
-        if overrides and field.canonical in overrides:
-            field.source_column = overrides[field.canonical] or None
-            field.confidence = 1.0
-            field.reason = "confirmed by user"
+        # A column the user dropped, or moved to a different field, leaves its
+        # old role. Otherwise one column would feed two fields.
+        if field.source_column and (
+            field.source_column in drop_columns
+            or (field.source_column in reassigned and by_canonical.get(field.canonical) != field.source_column)
+        ):
+            field.source_column = None
+            field.confidence = 0.0
+            field.reason = "removed by user"
+
+    for canonical, column in by_canonical.items():
+        target = fields.get(canonical)
+        if target is None:
+            continue
+        target.source_column = column
+        target.confidence = 1.0
+        target.reason = "confirmed by user"
     return mapping
 
 
@@ -302,18 +399,56 @@ def confirm_mapping(
     if not sources:
         raise KeyError(source_id or dataset_id)
 
+    # Validate every override against the columns that actually exist, before
+    # anything is written. The per-source filter below exists so a correction
+    # for one branch's export is not applied to another branch's file — but on
+    # its own it also swallowed genuinely wrong input, so a typo in a column name
+    # confirmed successfully and changed nothing. An override that matches no
+    # source at all is refused outright, and refused before any source is saved,
+    # so a bad request cannot leave the dataset half-confirmed.
+    if overrides:
+        columns_by_source = {
+            source["source_id"]: set(read_columns(Path(source["raw_path"])))
+            for source in sources
+        }
+        every_column = set().union(*columns_by_source.values()) if columns_by_source else set()
+        canonical_names = set(ALL_CANONICAL) | {IGNORE}
+        unmatched = [
+            key for key, value in overrides.items()
+            if key not in every_column
+            and not (key in canonical_names and value and value in every_column)
+        ]
+        if unmatched:
+            raise ValueError(
+                "override refers to columns not present in any uploaded file: "
+                + ", ".join(sorted(unmatched))
+            )
+
     confirmed: list[dict] = []
     problems: list[dict] = []
 
     for source in sources:
         mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
-        columns = {f.source_column for f in mapping.fields if f.source_column}
-        relevant = (
-            {k: v for k, v in overrides.items() if not v or v in columns or source_id}
-            if overrides
-            else None
-        )
-        mapping = _apply_overrides(mapping, relevant)
+        file_columns = read_columns(Path(source["raw_path"]))
+        # An override only applies to a source that actually has the column. A
+        # correction for Jakarta's Accurate export means nothing to Surabaya's
+        # Jubelio file, where that column does not exist.
+        relevant = None
+        if overrides:
+            present = set(file_columns)
+            relevant = {
+                k: v for k, v in overrides.items()
+                if k in present or (v and v in present) or source_id
+            } or None
+        try:
+            mapping = _apply_overrides(mapping, relevant, file_columns)
+        except ValueError as exc:
+            problems.append({
+                "source_id": source["source_id"],
+                "filename": source["filename"],
+                "missing": [str(exc)],
+            })
+            continue
 
         missing = mapping.missing_required()
         if missing:
@@ -384,7 +519,9 @@ def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, Cle
 
     frames: list[pl.DataFrame] = []
     rows_received = 0
-    for source in sources:
+    # Sources arrive ordered by upload time, so the loop index is the rank a
+    # later upload uses to supersede an earlier one for overlapping periods.
+    for rank, source in enumerate(sources):
         mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
         if mapping.missing_required():
             continue
@@ -392,7 +529,7 @@ def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, Cle
         frame, partial = canonicalize(source_df, mapping)
         rows_received += partial.rows_received
         if frame.height:
-            frames.append(frame)
+            frames.append(frame.with_columns(pl.lit(rank).alias(SOURCE_RANK_COL)))
 
     if not frames:
         raise ValueError("no source in this dataset has a usable mapping yet")

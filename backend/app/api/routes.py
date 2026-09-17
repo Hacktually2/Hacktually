@@ -16,6 +16,8 @@ from ..canonical import DecisionMode
 from ..db import database as db
 from ..decision import params as params_mod
 from ..integrations import slack
+from ..integrations import notify
+from ..services import branches as branches_svc
 from ..services import export_service
 from ..services import pipeline_service as svc
 from ..services import view_models as views
@@ -41,6 +43,20 @@ class ForecastRequest(BaseModel):
     horizon: int = 30
     use_calendar: bool = True
     mode: DecisionMode = DecisionMode.RITEL
+
+
+class ReconcileRequest(BaseModel):
+    codes: list[str]
+
+
+class DigestRequest(BaseModel):
+    dataset_id: str
+    location_id: str
+    # Supplied by the caller, never stored. The backend has no auth; who manages
+    # which branch lives in the frontend, which checks access before calling.
+    recipients: list[str] = []
+    channel: str = "email"
+    dry_run: bool = False
 
 
 class AlertRequest(BaseModel):
@@ -269,6 +285,65 @@ def get_series(dataset_id: str, series_id: str):
     if not result["forecast"]:
         raise HTTPException(status_code=404, detail="no forecast for this series")
     return result
+
+
+# ----------------------------------------------------------------- branches
+
+@router.get("/branches/{dataset_id}")
+def get_branches(dataset_id: str, location: str | None = None):
+    """Per-branch performance on rates, plus cross-branch transfer candidates.
+
+    `?location=` scopes to one branch. Access is decided by the caller.
+    """
+    try:
+        return branches_svc.insights(dataset_id, location)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+
+
+@router.get("/branches/{dataset_id}/list")
+def list_branches(dataset_id: str):
+    """Branch codes present in the data, for matching against a manager list."""
+    return {"dataset_id": dataset_id, "branches": branches_svc.list_branches(dataset_id)}
+
+
+@router.post("/branches/{dataset_id}/reconcile")
+def reconcile_branches(dataset_id: str, body: ReconcileRequest):
+    """Match supplied branch codes to the data before any access is granted.
+
+    Returns exact matches, near-matches that need a person to confirm, and codes
+    on either side with no counterpart. Grants nothing itself.
+    """
+    return branches_svc.reconcile(dataset_id, body.codes)
+
+
+@router.get("/branches/{dataset_id}/{location_id}/summary")
+def get_branch_summary(dataset_id: str, location_id: str):
+    """The readable digest a branch manager would receive, without sending it."""
+    try:
+        return branches_svc.branch_summary(dataset_id, location_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="branch not found in this dataset")
+
+
+@router.post("/notifications/branch-digest")
+def send_branch_digest(body: DigestRequest):
+    """Send one branch's digest. Skips silently when there is nothing new."""
+    try:
+        return notify.send_branch_digest(
+            body.dataset_id, body.location_id, body.recipients, body.channel, body.dry_run
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="branch not found in this dataset")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/notifications/{dataset_id}/log")
+def reset_notification_log(dataset_id: str, location_id: str | None = None):
+    """Forget what was sent, so the next digest reports everything again."""
+    notify.reset(dataset_id, location_id)
+    return {"reset": True, "dataset_id": dataset_id, "location_id": location_id}
 
 
 # ------------------------------------------------------------ dashboard tabs
