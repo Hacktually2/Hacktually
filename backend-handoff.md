@@ -129,8 +129,8 @@ punya banyak file), plus `needs_attention`, dan `health` dalam bentuk
 - `recommended_qty` float → dibulatkan 1 desimal, dan kelipatan MOQ kalau MOQ diisi.
   **Belum** integer, jadi pembulatan terakhir masih di kamu
 - `/value/{id}` 404 sebelum forecast → pesannya dipertahankan
-- CORS `localhost:3000` → **masih ada**, belum kuhapus
-- Auth backend → masih tidak ada, lihat §4
+- CORS `localhost:3000` → **dihapus**, lihat §8
+- Auth backend → **shared key opt-in**, lihat §8
 
 ---
 
@@ -356,3 +356,119 @@ cd backend
 `check_contract.py` itu padanan `npm run check:fixtures` untuk sisi backend —
 termasuk tes bahwa `?location=` tidak membocorkan cabang lain, dan bahwa cabang
 yang salah ketik mengembalikan kosong, bukan seluruh network.
+
+---
+
+## 8. Keamanan dan kerahasiaan data
+
+Semua opt-in. **Tanpa konfigurasi apa pun, tidak ada yang berubah** dari yang
+sekarang kamu pakai — 6 tes memastikan itu, supaya tidak ada alasan untuk tidak
+menyalakannya nanti.
+
+### Shared key, bukan authentication
+
+Identitas dan izin cabang tetap milik auth layer-mu. Backend cuma menolak apa
+pun yang bukan server aplikasi ini.
+
+```
+BACKEND_API_KEY=...          # kosong = TERBUKA, dan log memperingatkan tiap boot
+BACKEND_REQUIRE_TENANT=1
+```
+
+Kalau di-set, setiap request butuh dua header:
+
+```
+X-API-Key: <BACKEND_API_KEY>
+X-Tenant-Id: <id perusahaan>
+```
+
+Tambahkan keduanya di `lib/backend/client.ts`. `/health` tetap terbuka untuk
+monitoring.
+
+### Isolasi tenant
+
+Dataset distempel tenant yang mengunggahnya. Request dengan tenant berbeda
+dapat **404, bukan 403** — mengonfirmasi bahwa sebuah id itu ada tapi milik
+orang lain sudah merupakan kebocoran.
+
+Pengecekannya ada di **satu middleware**, bukan di tiap rute. Dataset id
+berawalan `ds_` dan job `job_`, jadi gate-nya membaca path. Rute yang kamu
+tambahkan besok otomatis ikut terlindungi. Diuji ke 15 keluarga URL, bukan
+sampel.
+
+`GET /datasets` dan `/projects` juga tersaring — nama file saja (`PT_ABC_sales.csv`)
+sudah cukup sensitif secara komersial.
+
+### CORS dihapus
+
+Sesuai permintaanmu di §5 migration-report. Semua panggilan sekarang
+server-to-server, dan mengizinkan origin browser berarti satu-satunya yang
+melindungi data adalah orang tidak tahu alamatnya.
+
+### Deteksi data pribadi saat upload
+
+Ekspor ERP sering membawa kolom yang tidak dibutuhkan forecast. Sistem memindai
+**nilai**, bukan nama kolom, dengan format Indonesia sebagai kelas utama: NIK 16
+digit, NPWP 15, nomor HP `08`/`+62`, email, koordinat presisi.
+
+Hasilnya masuk ke `health.personal_data` dan jadi finding pertama. Kalau kolomnya
+**dipakai forecast**, severity-nya `critical`; kalau cuma ikut terunggah,
+`warning`.
+
+**Dilaporkan, tidak pernah dihapus.** Kolom mana yang boleh dikirim itu keputusan
+perusahaannya, dan membuang kolom diam-diam lebih buruk daripada menandainya.
+Tindakan yang disarankan: map ke `ignore`, atau ekspor ulang tanpa kolom itu.
+
+### Penghapusan data
+
+```
+DELETE /api/v1/datasets/{id}
+```
+
+Menghapus baris turunan **dan file yang diunggah**. Penghapusan yang menyisakan
+CSV asli di `data/uploads` bukan penghapusan. Response menyebut jumlah baris per
+tabel dan berapa file yang dibuang.
+
+### Laporan privasi untuk ditunjukkan ke customer
+
+```
+GET /api/v1/datasets/{id}/privacy
+```
+
+Menjawab "data saya ke mana" dengan spesifik, bukan dengan jaminan:
+
+- **Ke GPU forecasting:** hanya kuantitas permintaan, sebagai deret angka tanpa
+  label. Nama dan kode barang, nama cabang, harga, dan kolom apa pun yang
+  ditandai data pribadi **tidak dikirim**
+- **Ke email/Slack digest:** kode barang, jumlah pesanan, dan sisa hari untuk
+  **satu** cabang
+- **Tidak pernah keluar:** file unggahan itu sendiri, identitas orang
+
+Layak ditampilkan sebagai satu panel, karena ini yang ditanyakan calon pelanggan
+mid-market sebelum mengirim data penjualan.
+
+### Export tadinya bocor
+
+`GET /export/{id}/recommendations` mengembalikan **semua cabang** ke siapa pun
+yang punya dataset id. Layarnya sudah di-scope, unduhannya belum. Sekarang ada
+`?location=`, dan itu bug di kode backend, bukan di kodemu.
+
+### Secret tidak lagi diprint ke terminal
+
+`mcp_setup.py` sebelumnya mencetak `GPU_INFERENCE_API_KEY` apa adanya — dan
+output itu sering ditempel ke chat atau tampil saat share screen. Sekarang
+diredaksi di terminal; file config yang ditulis `--write` tetap berisi nilai
+aslinya.
+
+### Yang masih belum ada
+
+- **Audit log** siapa melakukan apa. Butuh identitas dari sisimu, dan ini
+  sekaligus gap B12
+- **Enkripsi at-rest** untuk `data/uploads` dan SQLite. Sekarang mengandalkan
+  enkripsi disk host
+- **Rate limiting.** Backend tidak punya
+- **Rotasi key.** Ganti `BACKEND_API_KEY` berarti restart
+
+Untuk pitch: yang boleh diklaim adalah *deteksi data pribadi*, *isolasi tenant*,
+*penghapusan yang mencapai file asli*, dan *hanya deret angka tanpa label yang
+keluar ke GPU*. Yang **belum** boleh diklaim: enkripsi at-rest dan audit trail.
