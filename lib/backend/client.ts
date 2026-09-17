@@ -5,25 +5,35 @@ import "server-only";
  *
  * Everything goes through `request`, so timeouts, error translation and the
  * "is it even up" question are answered once. Callers get either a value or a
- * `BackendError` carrying enough to render a useful message and to write a
- * line in the migration report — never a bare `fetch` rejection.
+ * `BackendError` carrying enough to render a useful message — never a bare
+ * `fetch` rejection.
+ *
+ * Most calls are now typed directly to the types in `app/dummy-data/types.ts`,
+ * because that is what the service returns. Nothing is reshaped on the way
+ * through: a screen renders what the backend sent.
  *
  * Server-only: the backend has no auth of its own, so the browser must never
  * hold its address or call it directly. Every read is proxied through a Server
  * Component or Server Action that has already checked branch access.
  */
 import type {
+  DemandResponse,
+  HealthReport,
+  MappingResponse,
+  OverviewResponse,
+  Project,
+  SupplyChainResponse,
+  ValueSimulation,
+} from "@/app/dummy-data/types";
+import type {
+  BackendBranches,
   BackendDataset,
   BackendForecastList,
-  BackendHealth,
   BackendHealthCheck,
   BackendIngestResult,
   BackendJob,
-  BackendMappingResponse,
-  BackendRecommendation,
+  BackendParams,
   BackendSeriesForecast,
-  BackendUsage,
-  BackendValue,
 } from "./types";
 
 export const BACKEND_URL = process.env.BACKEND_API_URL ?? "http://localhost:8000";
@@ -125,7 +135,16 @@ export const backend = {
 
   health: () => request<BackendHealthCheck>("/health"),
 
+  /* ---- project chooser -------------------------------------------------- */
+
+  listProjects: () => request<Project[]>("/api/v1/projects"),
+
+  getProject: (projectId: string) => request<Project>(`/api/v1/projects/${projectId}`),
+
+  /** The raw dataset list. `listProjects` is the read model built on top of it. */
   listDatasets: () => request<BackendDataset[]>("/api/v1/datasets"),
+
+  /* ---- onboarding ------------------------------------------------------- */
 
   ingest: (file: File) => {
     const form = new FormData();
@@ -134,21 +153,42 @@ export const backend = {
   },
 
   getMapping: (datasetId: string) =>
-    request<BackendMappingResponse>(`/api/v1/datasets/${datasetId}/mapping`),
+    request<MappingResponse>(`/api/v1/datasets/${datasetId}/mapping`),
 
   /**
    * Confirming also runs cleaning and profiling, so this is slow and it returns
    * the health report as part of the same response.
    */
-  confirmMapping: (datasetId: string, overrides: Record<string, string>) =>
-    request<BackendMappingResponse>(`/api/v1/datasets/${datasetId}/mapping`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ overrides }),
-    }),
+  confirmMapping: (datasetId: string, overrides: Record<string, string>, sourceId?: string) =>
+    request<{ dataset_id: string; confirmed: boolean; health: HealthReport }>(
+      `/api/v1/datasets/${datasetId}/mapping`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overrides, source_id: sourceId ?? null }),
+      },
+    ),
 
   getHealth: (datasetId: string) =>
-    request<BackendHealth>(`/api/v1/datasets/${datasetId}/health`),
+    request<HealthReport>(`/api/v1/datasets/${datasetId}/health`),
+
+  /** Adds another branch's export, each keeping its own column mapping. */
+  appendSource: (datasetId: string, file: File, branchLabel?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    const query = branchLabel ? `?branch_label=${encodeURIComponent(branchLabel)}` : "";
+    return request<Record<string, unknown>>(
+      `/api/v1/datasets/${datasetId}/append${query}`,
+      { method: "POST", body: form },
+    );
+  },
+
+  listSources: (datasetId: string) =>
+    request<{ dataset_id: string; sources: Record<string, unknown>[] }>(
+      `/api/v1/datasets/${datasetId}/sources`,
+    ),
+
+  /* ---- jobs ------------------------------------------------------------- */
 
   startForecast: (datasetId: string, horizon = 30, mode = "ritel") =>
     request<{ job_id: string; status: string }>(
@@ -162,6 +202,36 @@ export const backend = {
 
   getJob: (jobId: string) => request<BackendJob>(`/api/v1/jobs/${jobId}`),
 
+  /* ---- dashboards ------------------------------------------------------- */
+
+  getOverview: (datasetId: string) =>
+    request<OverviewResponse>(`/api/v1/overview/${datasetId}`),
+
+  getDemand: (datasetId: string, filters: Record<string, string | undefined> = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) query.set(key, value);
+    }
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<DemandResponse>(`/api/v1/demand/${datasetId}${suffix}`);
+  },
+
+  /**
+   * The decision engine's output, already in the shape the inventory workspace
+   * renders. `location_id` is accepted but currently ignored by the service —
+   * see gap B11.
+   */
+  getRecommendations: (datasetId: string, limit = 500, locationId?: string) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (locationId) query.set("location_id", locationId);
+    return request<SupplyChainResponse>(
+      `/api/v1/recommendations/${datasetId}?${query}`,
+    );
+  },
+
+  getValue: (datasetId: string) =>
+    request<ValueSimulation>(`/api/v1/value/${datasetId}`),
+
   listForecasts: (datasetId: string, limit = 500) =>
     request<BackendForecastList>(`/api/v1/forecasts/${datasetId}?limit=${limit}`),
 
@@ -170,14 +240,26 @@ export const backend = {
       `/api/v1/forecasts/${datasetId}/${encodeURIComponent(seriesId)}`,
     ),
 
-  getRecommendations: (datasetId: string, limit = 200, risk?: string) =>
-    request<{ dataset_id: string; recommendations: BackendRecommendation[] }>(
-      `/api/v1/recommendations/${datasetId}?limit=${limit}${risk ? `&risk=${risk}` : ""}`,
-    ),
+  /* ---- parameters, branches, alerts ------------------------------------ */
 
-  getValue: (datasetId: string) => request<BackendValue>(`/api/v1/value/${datasetId}`),
+  getParams: (datasetId: string) =>
+    request<BackendParams>(`/api/v1/datasets/${datasetId}/params`),
 
-  getUsage: (datasetId: string) => request<BackendUsage>(`/api/v1/usage/${datasetId}`),
+  setParams: (
+    datasetId: string,
+    entries: { scope: string; scope_value: string; values: Record<string, number> }[],
+  ) =>
+    request<Record<string, unknown>>(`/api/v1/datasets/${datasetId}/params`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    }),
+
+  getBranches: (datasetId: string) =>
+    request<BackendBranches>(`/api/v1/branches/${datasetId}`),
+
+  getHierarchy: (datasetId: string) =>
+    request<Record<string, unknown>>(`/api/v1/datasets/${datasetId}/hierarchy`),
 
   sendSlackAlert: (datasetId: string, seriesIds: string[], limit = 5) =>
     request<{ sent: boolean; message?: string; reason?: string }>("/api/v1/alerts/slack", {

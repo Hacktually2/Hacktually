@@ -98,7 +98,7 @@ check("the assistant's location scope follows branch access", () => {
   const jakarta = db.listBranches(demo.project_id).find((b) => b.code === "CAB-JKT-01")!;
 
   // Owner: every branch claiming the project.
-  assert.deepEqual(db.accessibleLocations(demoOwner.id, "prj-abc").sort(), ["CAB-JKT-01"]);
+  assert.deepEqual(db.accessibleLocations(demoOwner.id, "prj-abc")?.sort(), ["CAB-JKT-01"]);
   // Manager with no grant: claimed, but nothing allowed. Empty, NOT null —
   // null would mean "unrestricted" and hand the assistant every branch.
   assert.deepEqual(db.accessibleLocations(budi.id, "prj-abc"), []);
@@ -106,6 +106,19 @@ check("the assistant's location scope follows branch access", () => {
   db.grantAccess(budi.id, jakarta.id, demoOwner.id);
   assert.deepEqual(db.accessibleLocations(budi.id, "prj-abc"), ["CAB-JKT-01"]);
   db.revokeAccess(budi.id, jakarta.id);
+});
+
+check("both id forms of one forecasting project are guarded the same", () => {
+  // The service answers to prj-ds_x and ds_x. If only one is recognised the
+  // dashboard is guarded under that id and wide open under the other.
+  const budi = db.findUserByEmail("budi.santoso@gmail.com")!;
+  assert.equal(db.findBranchByForecastProject("prj-abc")?.code, "CAB-JKT-01");
+  assert.equal(db.findBranchByForecastProject("abc")?.code, "CAB-JKT-01");
+
+  for (const id of ["prj-abc", "abc"]) {
+    assert.deepEqual(db.accessibleLocations(budi.id, id), [], `${id} leaked`);
+    assert.equal(db.visibleForecastProjects(budi.id, [id]).size, 0, `${id} visible`);
+  }
 });
 
 check("a forecasting project no branch claims is unrestricted, not empty", () => {

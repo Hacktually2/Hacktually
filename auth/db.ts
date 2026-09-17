@@ -573,6 +573,24 @@ export function listAccessibleBranches(userId: string, projectId: string): Branc
 }
 
 /**
+ * The two ids one forecasting project answers to.
+ *
+ * The service mints `prj-ds_abc123` as a project id over the dataset id
+ * `ds_abc123`, and both appear in our URLs — the chooser links the project id,
+ * a branch records the dataset id it was split from. Every access check has to
+ * recognise both, or the same dashboard is guarded under one id and wide open
+ * under the other.
+ *
+ * The prefix is the service's convention, hardcoded here reluctantly. If it
+ * ever changes, this is the one place to change it.
+ */
+function idVariants(forecastProjectId: string): [string, string] {
+  return forecastProjectId.startsWith("prj-")
+    ? [forecastProjectId, forecastProjectId.slice("prj-".length)]
+    : [forecastProjectId, `prj-${forecastProjectId}`];
+}
+
+/**
  * The branch that claims a forecasting project, if any.
  *
  * This is what turns a dashboard URL into an access question: `prj-abc` is not
@@ -580,9 +598,10 @@ export function listAccessibleBranches(userId: string, projectId: string): Branc
  * one has then only that branch's people may open it.
  */
 export function findBranchByForecastProject(forecastProjectId: string): Branch | null {
+  const [a, b] = idVariants(forecastProjectId);
   const row = db
-    .prepare("SELECT * FROM branches WHERE forecast_project_id = ?")
-    .get(forecastProjectId) as Row | undefined;
+    .prepare("SELECT * FROM branches WHERE forecast_project_id IN (?, ?)")
+    .get(a, b) as Row | undefined;
   return row ? toBranch(row) : null;
 }
 
@@ -599,6 +618,8 @@ export function visibleForecastProjects(
   userId: string,
   candidateIds: string[],
 ): Set<string> {
+  // Keyed by both id forms, so a candidate list mixing project ids and dataset
+  // ids resolves either way.
   const claimed = new Map(
     (
       db
@@ -611,7 +632,10 @@ export function visibleForecastProjects(
            WHERE b.forecast_project_id IS NOT NULL`,
         )
         .all(userId) as Row[]
-    ).map((row) => [text(row, "id"), num(row, "allowed") === 1] as const),
+    ).flatMap((row) => {
+      const allowed = num(row, "allowed") === 1;
+      return idVariants(text(row, "id")).map((id) => [id, allowed] as const);
+    }),
   );
 
   return new Set(candidateIds.filter((id) => claimed.get(id) ?? true));
@@ -638,15 +662,16 @@ export function accessibleLocations(
   userId: string,
   forecastProjectId: string,
 ): string[] | null {
+  const [a, b] = idVariants(forecastProjectId);
   const claiming = db
     .prepare(
-      `SELECT b.code, (p.owner_id = ?1 OR a.user_id IS NOT NULL) AS allowed
-       FROM branches b
-       JOIN projects p           ON p.id = b.project_id
-       LEFT JOIN branch_access a ON a.branch_id = b.id AND a.user_id = ?1
-       WHERE b.forecast_project_id = ?2`,
+      `SELECT br.code, (p.owner_id = ?1 OR acc.user_id IS NOT NULL) AS allowed
+       FROM branches br
+       JOIN projects p             ON p.id = br.project_id
+       LEFT JOIN branch_access acc ON acc.branch_id = br.id AND acc.user_id = ?1
+       WHERE br.forecast_project_id IN (?2, ?3)`,
     )
-    .all(userId, forecastProjectId) as Row[];
+    .all(userId, a, b) as Row[];
 
   if (claiming.length === 0) return null;
   return claiming.filter((row) => num(row, "allowed") === 1).map((row) => text(row, "code"));

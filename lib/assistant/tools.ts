@@ -18,8 +18,7 @@ import "server-only";
  *      the viewer is entitled to and never sees the rest.
  */
 import { backend } from "@/lib/backend/client";
-import { toInventoryRow } from "@/lib/backend/adapters";
-import type { BackendRecommendation } from "@/lib/backend/types";
+import type { InventoryRow } from "@/app/dummy-data/types";
 
 /** Matches the MCP server's MAX_ROWS, for the same reason. */
 const MAX_ROWS = 20;
@@ -30,10 +29,10 @@ export interface ToolContext {
   locations: string[] | null;
 }
 
-function inScope(rows: BackendRecommendation[], locations: string[] | null) {
+function inScope(rows: InventoryRow[], locations: string[] | null) {
   if (locations === null) return rows;
   const allowed = new Set(locations);
-  return rows.filter((row) => row.location_id !== null && allowed.has(row.location_id));
+  return rows.filter((row) => allowed.has(row.location_id));
 }
 
 export const TOOL_DEFINITIONS = [
@@ -126,13 +125,13 @@ export async function runTool(
     switch (name) {
       case "get_stockout_risk": {
         const limit = Math.min(Number(input.top_n) || 10, MAX_ROWS);
-        const { recommendations } = await backend.getRecommendations(context.datasetId, 200);
-        let rows = inScope(recommendations, context.locations);
+        const response = await backend.getRecommendations(context.datasetId, 500);
+        let rows = inScope(response.rows, context.locations);
         if (typeof input.location === "string" && input.location) {
           rows = rows.filter((row) => row.location_id === input.location);
         }
         const ranked = rows
-          .filter((row) => row.stockout_risk === "high" || row.stockout_risk === "medium")
+          .filter((row) => row.risk === "critical" || row.risk === "at_risk")
           .sort((a, b) => (a.days_until_stockout ?? 999) - (b.days_until_stockout ?? 999))
           .slice(0, limit);
 
@@ -142,38 +141,46 @@ export async function runTool(
             context.locations === null
               ? "all locations"
               : `locations you can access: ${context.locations.join(", ")}`,
+          // The headline is the backend's own phrasing of what needs attention.
+          headline: response.headline.detail,
           items: ranked.map((row) => ({
             series_id: row.series_id,
-            item: row.item_id,
-            location: row.location_id,
-            risk: row.stockout_risk,
+            item: row.item_name,
+            location: row.location,
+            category: row.category,
+            risk: row.risk,
+            days_of_cover: row.coverage_days,
             days_until_stockout: row.days_until_stockout,
-            recommended_qty: Math.round(row.recommended_qty),
+            recommended_qty: row.recommended_qty,
           })),
         });
       }
 
       case "get_reorder_recommendation": {
         const seriesId = String(input.series_id ?? "");
-        const { recommendations } = await backend.getRecommendations(context.datasetId, 500);
-        const match = inScope(recommendations, context.locations).find(
-          (row) => row.series_id === seriesId,
+        const response = await backend.getRecommendations(context.datasetId, 500);
+        const row = inScope(response.rows, context.locations).find(
+          (entry) => entry.series_id === seriesId,
         );
-        if (!match) {
-          return `No recommendation for ${seriesId} in the data you can see.`;
-        }
-        const row = toInventoryRow(match);
+        if (!row) return `No recommendation for ${seriesId} in the data you can see.`;
+
         return JSON.stringify({
           series_id: row.series_id,
+          item: row.item_name,
           location: row.location,
+          category: row.category,
           risk: row.risk,
+          current_stock: row.current_stock,
+          forecast_demand: row.forecast_demand,
+          safety_stock: row.safety_stock,
+          coverage_days: row.coverage_days,
+          lead_time_days: row.lead_time_days,
+          moq: row.moq,
           days_until_stockout: row.days_until_stockout,
           recommended_qty: row.recommended_qty,
           why: row.explanation.lines,
           model_used: row.model,
           backtest_wape_percent: row.wape_percent,
-          // Say what is missing rather than letting the model infer a zero.
-          not_reported_by_the_service: ["coverage_days", "lead_time_days", "moq", "category"],
         });
       }
 
@@ -181,12 +188,14 @@ export async function runTool(
         const health = await backend.getHealth(context.datasetId);
         return JSON.stringify({
           health_score: health.health_score,
-          frequency: health.frequency,
+          frequency: health.detected_frequency,
+          history_span_months: health.history_span_months,
           series_forecastable: health.series_forecastable,
           series_total: health.series_total,
-          demand_portfolio: health.demand_portfolio,
           findings: health.findings,
-          excluded_total: health.series_excluded_count,
+          // A sample, not the whole list: it can run to hundreds of series.
+          excluded_sample: health.series_excluded.slice(0, 5),
+          excluded_total: health.series_excluded.length,
         });
       }
 
