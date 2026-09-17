@@ -192,7 +192,12 @@ export interface PriorityAction {
   metric_label: string;
   metric_value: number;
   metric_unit: "units" | "days";
-  href: string;
+  /**
+   * Where clicking this action goes. The live service sends null for every
+   * action, so the screen falls back to the tab that can act on it — see
+   * gap B16. Declared nullable because it is.
+   */
+  href: string | null;
 }
 
 export interface InventoryPosture {

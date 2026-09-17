@@ -20,6 +20,7 @@ import { timingSafeEqual } from "node:crypto";
 import {
   accessibleLocations,
   findBranchByForecastProject,
+  uploaderOf,
   getProject,
   getUser,
   hasBranchAccess,
@@ -97,6 +98,55 @@ export async function requireSession(): Promise<AuthUser> {
 }
 
 /**
+ * A project any signed-in person may look at, and what they may do with it.
+ *
+ * Deliberately softer than `requireProjectAccess`: a manager who holds nothing
+ * in this project still gets here, because the project id IS the shareable
+ * link — that is how someone finds the branches they run and asks for them.
+ * Refusing them would mean every request has to start with the owner sending a
+ * secret token, which is a worse product and not actually more secure: the
+ * invite link already hands out the same information.
+ *
+ * What an outsider gets is the branch LIST — names and sizes — and nothing
+ * else. No forecasts, no recommendations, no rows. Those still go through
+ * `requireForecastAccess`, and the team screen renders a request form rather
+ * than the owner's management surface.
+ *
+ * Project ids are 12 random hex characters, so this is not an enumerable
+ * directory of every company on the service.
+ */
+export async function projectAccessFor(projectId: string): Promise<{
+  user: AuthUser;
+  project: Project;
+  /** Branches this person holds. Empty for an outsider. */
+  branches: Branch[];
+  /** Every branch in the project — the list an outsider may request from. */
+  allBranches: Branch[];
+  isOwner: boolean;
+  /** True when they already hold at least one branch here. */
+  isMember: boolean;
+}> {
+  const user = await requireSession();
+  const project = getProject(projectId);
+  if (!project) notFound();
+
+  const allBranches = listBranches(project.project_id);
+  if (project.owner_id === user.id) {
+    return { user, project, branches: allBranches, allBranches, isOwner: true, isMember: true };
+  }
+
+  const branches = listAccessibleBranches(user.id, project.project_id);
+  return {
+    user,
+    project,
+    branches,
+    allBranches,
+    isOwner: false,
+    isMember: branches.length > 0,
+  };
+}
+
+/**
  * A project the caller is entitled to open, with the branches they may work on.
  *
  * Owners get their own projects and every branch in them. Managers get the
@@ -136,15 +186,25 @@ export async function requireProjectAccess(projectId: string): Promise<{
  * or access. This is the join between the two: if some branch has staked a
  * claim on that project, only that branch's people may open it.
  *
- * A project no branch claims is left alone. That is on purpose: a dataset
- * pushed straight into forecasting is not governed by this layer, and refusing
- * it here would mean the auth service silently owns things it was never told
- * about. Signed-in is the floor; the layout above already enforces that.
+ * **Default deny.** This used to let any signed-in user open a project no
+ * branch claimed, reasoning that a dataset pushed straight into the forecasting
+ * service was not this layer's to govern. It failed open: abandoned uploads —
+ * real rows, real quantities, every branch — were readable by every account.
+ *
+ * An unclaimed dataset now belongs to whoever uploaded it through this app,
+ * which covers the window between uploading a file and answering the column
+ * questions. A dataset this layer has never seen belongs to nobody and is
+ * refused, because a 404 is the right answer to "is this mine?" when we have no
+ * reason to think it is.
  */
 export async function requireForecastAccess(forecastProjectId: string): Promise<AuthUser> {
   const user = await requireSession();
   const branch = findBranchByForecastProject(forecastProjectId);
-  if (!branch) return user;
+
+  if (!branch) {
+    if (uploaderOf(forecastProjectId) !== user.id) notFound();
+    return user;
+  }
 
   const project = getProject(branch.project_id);
   if (project?.owner_id === user.id) return user;

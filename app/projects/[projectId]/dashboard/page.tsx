@@ -216,7 +216,17 @@ function PriorityPanel({
         {actions.map((action) => (
           <li key={action.series_id}>
             <Link
-              href={action.href}
+              // The service sends no href (gap B16). Rather than a dead row in
+              // a list whose whole purpose is being acted on, fall back to the
+              // tab that can act on it — `?series=` is what the inventory
+              // workspace reads to select a row and open its reasoning. Routing
+              // is the frontend's to decide; the ranking above it is not.
+              href={
+                action.href ??
+                `/projects/${projectId}/dashboard/supply-chain?series=${encodeURIComponent(
+                  action.series_id
+                )}`
+              }
               className="group flex items-start gap-4 px-5 py-4 transition-colors duration-(--duration-fast) hover:bg-brand-pale-soft"
             >
               <span

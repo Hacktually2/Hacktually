@@ -1,13 +1,21 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { listMemberships, listRequests, listRequestsByUser } from "@/auth/db";
+import {
+  getCompanyToken,
+  listCompanyMembers,
+  listMemberships,
+  listRequests,
+  listRequestsByUser,
+} from "@/auth/db";
+import { RequestAccess } from "@/components/app-shell/request-access";
 import { decideRequest, revokeBranch } from "@/auth/actions";
-import { requireProjectAccess } from "@/auth/session";
+import { projectAccessFor } from "@/auth/session";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { AlertTriangle, Check, Clock, Database, Layers, Shield, X } from "@/components/ui/icons";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatNumber } from "@/lib/format";
 import { AgentAccess } from "./agent-access";
+import { CompanyToken } from "./company-token";
 import { CopyLink } from "./copy-link";
 import { InviteManager } from "./invite-manager";
 
@@ -16,17 +24,28 @@ export const metadata: Metadata = { title: "Team & access" };
 /**
  * Who can see which branch.
  *
- * One route, two products. An owner sees the whole project and every decision
- * they can make on it; a manager sees only the branches they hold and the ones
- * they are waiting on. `requireProjectAccess` decides which, and a manager with
- * no branch in this project never gets here at all.
+ * One route, three products, decided by what the visitor holds here:
+ *
+ *   owner     the whole project and every decision they can make on it
+ *   member    the branches they hold, and what they are still waiting on
+ *   outsider  the branch list, and a form to ask for some of it
+ *
+ * The third one is why this page does not refuse strangers. A project id is
+ * the shareable link: an owner sends it to a new branch manager, who opens it,
+ * sees the branches and asks for the ones they run. Refusing them would mean
+ * every request had to begin with a secret token, which is a worse product and
+ * no safer — the invite link discloses exactly the same list.
+ *
+ * An outsider sees branch names and sizes. Not a single forecast, recommendation
+ * or row: those go through `requireForecastAccess`, which is unchanged.
  */
 export default async function TeamPage({
   params,
   searchParams,
 }: PageProps<"/projects/[projectId]/team">) {
   const [{ projectId }, query] = await Promise.all([params, searchParams]);
-  const { user, project, branches, isOwner } = await requireProjectAccess(projectId);
+  const { user, project, branches, allBranches, isOwner, isMember } =
+    await projectAccessFor(projectId);
 
   // Agent access is an owner decision — a connected agent is not branch-scoped,
   // so showing it to a manager would hand them a way around their own grant.
@@ -40,19 +59,23 @@ export default async function TeamPage({
         description={
           isOwner
             ? "You own this project. Managers see only the branches you approve."
-            : "The branches you manage in this project."
+            : isMember
+              ? "The branches you manage in this project."
+              : "You do not manage any branch here yet. Ask the owner for the ones you run."
         }
         context={
           <>
             {project.organisation} · {project.dataset_filename} ·{" "}
-            {formatNumber(project.dataset_rows)} rows · {branches.length}{" "}
-            {branches.length === 1 ? "branch" : "branches"}
+            {formatNumber(project.dataset_rows)} rows · {allBranches.length}{" "}
+            {allBranches.length === 1 ? "branch" : "branches"}
           </>
         }
         action={
-          <ButtonLink href={`/projects/${projectId}/dashboard`} variant="secondary">
-            Open dashboard
-          </ButtonLink>
+          isMember ? (
+            <ButtonLink href={`/projects/${projectId}/dashboard`} variant="secondary">
+              Open dashboard
+            </ButtonLink>
+          ) : undefined
         }
       />
 
@@ -72,9 +95,21 @@ export default async function TeamPage({
           <AgentAccess repoRoot={process.cwd()} />
         </div>
       ) : isOwner ? (
-        <OwnerView projectId={projectId} project={project} branches={branches} />
-      ) : (
+        <OwnerView
+          projectId={projectId}
+          project={project}
+          branches={branches}
+          ownerId={user.id}
+        />
+      ) : isMember ? (
         <ManagerView projectId={projectId} userId={user.id} branches={branches} />
+      ) : (
+        <OutsiderView
+          projectId={projectId}
+          userId={user.id}
+          role={user.role}
+          allBranches={allBranches}
+        />
       )}
     </main>
   );
@@ -112,19 +147,23 @@ function TabLink({
 
 /* ------------------------------------------------------------------- owner */
 
-type Branches = Awaited<ReturnType<typeof requireProjectAccess>>["branches"];
-type Project = Awaited<ReturnType<typeof requireProjectAccess>>["project"];
+type Branches = Awaited<ReturnType<typeof projectAccessFor>>["branches"];
+type Project = Awaited<ReturnType<typeof projectAccessFor>>["project"];
 
 function OwnerView({
   projectId,
   project,
   branches,
+  ownerId,
 }: {
   projectId: string;
   project: Project;
   branches: Branches;
+  ownerId: string;
 }) {
   const pending = listRequests(projectId, "pending");
+  const companyToken = getCompanyToken(ownerId);
+  const companyMembers = listCompanyMembers(ownerId);
   const members = listMemberships(projectId);
 
   // Which managers hold each branch, so the branch table answers "who sees
@@ -303,10 +342,23 @@ function OwnerView({
 
       <div className="space-y-5">
         <Panel
-          title="Project link"
-          description="Managers who open this can ask for the branches they run. It grants nothing on its own."
+          title="Company token"
+          description="One token for your whole company. A manager uses it to create their own account — no payment, and no branch until you approve one."
         >
-          <CopyLink token={project.invite_token} />
+          <CompanyToken
+            token={companyToken?.token ?? null}
+            expiresAt={companyToken?.expires_at ?? null}
+            uses={companyToken?.uses ?? 0}
+            expired={companyToken?.expired ?? false}
+            members={companyMembers.length}
+          />
+        </Panel>
+
+        <Panel
+          title="Project link"
+          description="Send this to a branch manager. They see the branch list and ask for the ones they run — it grants nothing on its own."
+        >
+          <CopyLink token={project.invite_token} projectId={projectId} />
         </Panel>
 
         <Panel
@@ -348,6 +400,117 @@ function Decision({
         {label}
       </Button>
     </form>
+  );
+}
+
+/* ---------------------------------------------------------------- outsider */
+
+/**
+ * Someone who holds nothing here yet.
+ *
+ * They get the branch list and a form. Not the dashboard link, not the invite
+ * link, not the manager roster, and not a single number from the data — which
+ * is the whole reason this view exists separately rather than reusing the
+ * manager one with things hidden.
+ */
+function OutsiderView({
+  projectId,
+  userId,
+  role,
+  allBranches,
+}: {
+  projectId: string;
+  userId: string;
+  role: string;
+  allBranches: Branches;
+}) {
+  const pending = new Set(
+    listRequestsByUser(userId, projectId)
+      .filter((request) => request.status === "pending")
+      .map((request) => request.branch_id)
+  );
+  const declined = listRequestsByUser(userId, projectId).filter(
+    (request) => request.status === "rejected"
+  );
+
+  return (
+    <div className="mt-8 grid animate-enter gap-5 [--enter-delay:80ms] lg:grid-cols-[1.4fr_1fr] lg:items-start">
+      <Panel
+        title="Branches in this project"
+        description={
+          role === "owner"
+            ? "You are signed in as an owner of your own workspace."
+            : "Select the ones you manage. The owner reviews every request before anything is shared."
+        }
+      >
+        {role === "owner" ? (
+          // Requesting is a manager action, and `requestBranchAccess` refuses an
+          // owner account. Showing the form anyway would be a button that always
+          // fails, so say why instead.
+          <>
+            <ul className="divide-y divide-border-subtle">
+              {allBranches.map((branch) => (
+                <li key={branch.id} className="py-2.5 first:pt-0">
+                  <p className="text-body-sm font-semibold text-ink">{branch.location}</p>
+                  <p className="text-meta text-ink-tertiary">
+                    {branch.code} · {formatNumber(branch.product_count)} products
+                  </p>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-5 flex items-start gap-2 border-t border-border-subtle pt-4 text-body-sm text-ink-secondary">
+              <AlertTriangle size={15} className="mt-0.5 shrink-0 text-status-watch" />
+              Owner accounts cannot request branches. Ask this project&rsquo;s owner to add
+              your manager account instead.
+            </p>
+          </>
+        ) : (
+          <RequestAccess
+            projectId={projectId}
+            branches={allBranches}
+            grantedIds={[]}
+            pendingIds={[...pending]}
+          />
+        )}
+      </Panel>
+
+      <div className="space-y-5">
+        <Panel title="What the owner sees">
+          <p className="text-body-sm leading-relaxed text-ink-secondary">
+            Your name, your email, the branches you asked for and your note. They approve or
+            decline each branch, and approval takes effect on your next page load.
+          </p>
+        </Panel>
+
+        {declined.length > 0 && (
+          <Panel title="Previously declined">
+            <ul className="space-y-2.5">
+              {declined.map((request) => (
+                <li key={request.id} className="flex items-start gap-2.5">
+                  <AlertTriangle size={15} className="mt-0.5 shrink-0 text-status-critical" />
+                  <div>
+                    <p className="text-body-sm font-medium text-ink">
+                      {request.branch_code} · {request.branch_location}
+                    </p>
+                    <p className="text-meta text-ink-tertiary">
+                      Asking again reopens it rather than adding a second request.
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
+
+        <div className="flex gap-3 rounded-md border border-border-subtle bg-surface-card px-4 py-3.5">
+          <Shield size={17} className="mt-0.5 shrink-0 text-brand-blue-ink" />
+          <p className="text-body-sm leading-relaxed text-ink-secondary">
+            You can see the branch names here, and nothing else. No forecasts, no order
+            lists and no rows until a branch is approved for you.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

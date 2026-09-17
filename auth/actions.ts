@@ -14,6 +14,10 @@ import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   authenticate,
+  countCompanyTokenUse,
+  issueCompanyToken,
+  ownerOfCompanyToken,
+  revokeCompanyToken,
   createProject,
   createUser,
   decideRequest as decideRequestInDb,
@@ -350,5 +354,87 @@ export async function signUpOwner(
   store.delete(CHECKOUT_COOKIE);
   await startSession(owner.id);
 
+  redirect("/projects");
+}
+
+/* ------------------------------------------------------- company token */
+
+/**
+ * Issues or rotates the owner's company token.
+ *
+ * Rotation is the revocation mechanism: the row is keyed by owner, so writing a
+ * new token invalidates the previous one in the same statement. There is no
+ * second list that could fall out of step with this one.
+ */
+export async function rotateCompanyToken(): Promise<void> {
+  const user = await requireSession();
+  if (user.role !== "owner") return;
+  issueCompanyToken(user.id);
+  refresh();
+}
+
+/** Turns the door off entirely. Existing managers keep their accounts. */
+export async function revokeCompanyTokenNow(): Promise<void> {
+  const user = await requireSession();
+  if (user.role !== "owner") return;
+  revokeCompanyToken(user.id);
+  refresh();
+}
+
+/* ------------------------------------------------------------ join a company */
+
+export type JoinCompanyState = { error: string | null };
+
+/**
+ * Creates a manager account inside an owner's company, from their token.
+ *
+ * The security properties worth stating, because this is the one path where a
+ * stranger creates an account without paying:
+ *
+ * - **The role is not a field.** It is `manager`, always. The token cannot mint
+ *   an owner, so it can never be used to skip checkout and get the role that
+ *   decides who sees which branch.
+ * - **It grants no data.** The new manager joins the company and sees the
+ *   owner's project names so they know what to ask for. Not one row, forecast
+ *   or recommendation until the owner approves a branch.
+ * - **The organisation is copied from the owner**, not supplied by the joiner,
+ *   so nobody can type their way into a company name they do not belong to.
+ * - **A bad token and an expired token are the same message.** Telling someone
+ *   a token "has expired" confirms it once existed.
+ */
+export async function joinCompany(
+  _previous: JoinCompanyState,
+  formData: FormData,
+): Promise<JoinCompanyState> {
+  const token = field(formData, "token");
+  const owner = ownerOfCompanyToken(token);
+  if (!owner) {
+    return { error: "That company token is not valid. Ask your owner for a current one." };
+  }
+
+  const email = field(formData, "email").toLowerCase();
+  const password = String(formData.get("password") ?? "");
+  const name = field(formData, "name");
+
+  if (!EMAIL.test(email)) return { error: "Enter a valid email address." };
+  if (!name) return { error: "Enter your name." };
+  if (password.length < 8) {
+    return { error: "Use a password of at least 8 characters." };
+  }
+  if (findUserByEmail(email)) {
+    return { error: "An account already exists for that address. Sign in instead." };
+  }
+
+  const manager = createUser({
+    email,
+    name,
+    organisation: owner.organisation,
+    role: "manager",
+    password,
+    companyOf: owner.id,
+  });
+
+  countCompanyTokenUse(token);
+  await startSession(manager.id);
   redirect("/projects");
 }
