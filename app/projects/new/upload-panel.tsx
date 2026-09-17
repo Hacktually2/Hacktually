@@ -1,47 +1,59 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useCallback, useRef, useState, useTransition } from "react";
+import { useActionState, useCallback, useRef, useState } from "react";
+import { useFormStatus } from "react-dom";
+import { uploadDataset, type UploadState } from "./actions";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, FileText, Upload, X } from "@/components/ui/icons";
 
-const MAX_BYTES = 200 * 1024 * 1024;
-const ACCEPTED = [".csv", ".tsv", ".json"];
+const MAX_BYTES = 64 * 1024 * 1024;
+const ACCEPTED = [".csv", ".tsv"];
+const INITIAL: UploadState = { error: null };
 
 /**
  * Upload (design.md §53).
  *
- * Client-side because it owns drag state and the selected file. Validation runs
- * here for immediate feedback and must be repeated server-side once the real
- * ingest endpoint exists — this check is a convenience, not a trust boundary.
+ * Client-side because it owns drag state and the chosen file. The checks here
+ * are for immediate feedback only — `uploadDataset` repeats every one of them
+ * on the server, which is the actual boundary.
+ *
+ * A drop assigns the file to the real <input> rather than to component state,
+ * so the form submits the same way whether the file was dropped or chosen and
+ * there is no second upload path to keep in step.
  */
-export function UploadPanel({ targetProjectId }: { targetProjectId: string }) {
-  const router = useRouter();
+export function UploadPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [state, action] = useActionState(uploadDataset, INITIAL);
   const [file, setFile] = useState<File | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [pending, startTransition] = useTransition();
 
   const accept = useCallback((candidate: File | undefined) => {
     if (!candidate) return;
     const name = candidate.name.toLowerCase();
     if (!ACCEPTED.some((ext) => name.endsWith(ext))) {
       setFile(null);
-      setError(`${candidate.name} is not a supported format. Upload a CSV, TSV or JSON export.`);
+      setLocalError(`${candidate.name} is not a supported format. Upload a CSV or TSV export.`);
       return;
     }
     if (candidate.size > MAX_BYTES) {
       setFile(null);
-      setError("That file is larger than 200 MB. Split the export or use the ingest API.");
+      setLocalError("That file is larger than 64 MB. Split the export or use the ingest API.");
       return;
     }
-    setError(null);
+    setLocalError(null);
     setFile(candidate);
   }, []);
 
+  function clear() {
+    setFile(null);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  const error = localError ?? state.error;
+
   return (
-    <div>
+    <form action={action}>
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -51,6 +63,8 @@ export function UploadPanel({ targetProjectId }: { targetProjectId: string }) {
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
+          // Hand the drop to the input so the form carries it on submit.
+          if (inputRef.current) inputRef.current.files = e.dataTransfer.files;
           accept(e.dataTransfer.files[0]);
         }}
         className={`rounded-md border border-dashed p-10 text-center transition-colors duration-(--duration-fast) ${
@@ -65,11 +79,12 @@ export function UploadPanel({ targetProjectId }: { targetProjectId: string }) {
         <p className="mt-4 text-body font-semibold text-brand-deep">
           Drag and drop your dataset
         </p>
-        <p className="mt-1 text-body-sm text-ink-secondary">CSV, TSV or JSON · up to 200 MB</p>
+        <p className="mt-1 text-body-sm text-ink-secondary">CSV or TSV · up to 64 MB</p>
 
         <input
           ref={inputRef}
           type="file"
+          name="file"
           accept={ACCEPTED.join(",")}
           className="sr-only"
           onChange={(e) => accept(e.target.files?.[0])}
@@ -105,7 +120,7 @@ export function UploadPanel({ targetProjectId }: { targetProjectId: string }) {
           </div>
           <button
             type="button"
-            onClick={() => setFile(null)}
+            onClick={clear}
             className="rounded-sm p-1.5 text-ink-tertiary hover:bg-surface-sunken hover:text-ink"
             aria-label={`Remove ${file.name}`}
           >
@@ -114,21 +129,23 @@ export function UploadPanel({ targetProjectId }: { targetProjectId: string }) {
         </div>
       )}
 
-      <div className="mt-6 flex items-center gap-3">
-        <Button
-          type="button"
-          size="lg"
-          disabled={!file || pending}
-          onClick={() =>
-            startTransition(() => router.push(`/projects/${targetProjectId}/processing`))
-          }
-        >
-          {pending ? "Starting…" : "Start processing"}
-        </Button>
-        <p className="text-body-sm text-ink-secondary">
-          Your data is profiled before any forecast runs.
-        </p>
-      </div>
+      <Submit ready={Boolean(file)} />
+    </form>
+  );
+}
+
+function Submit({ ready }: { ready: boolean }) {
+  const { pending } = useFormStatus();
+  return (
+    <div className="mt-6 flex items-center gap-3">
+      <Button type="submit" size="lg" disabled={!ready || pending}>
+        {pending ? "Uploading…" : "Start processing"}
+      </Button>
+      <p className="text-body-sm text-ink-secondary" aria-live="polite">
+        {pending
+          ? "Reading the file. Nothing is interpreted until you confirm."
+          : "You confirm what each column means before anything is split."}
+      </p>
     </div>
   );
 }

@@ -32,9 +32,6 @@ export interface HoverData {
   upper: (number | null)[];
   yActual: (number | null)[];
   yForecast: (number | null)[];
-  /** Present only when the sales series is being drawn. */
-  sales?: (number | null)[];
-  ySales?: (number | null)[];
 }
 
 export interface ChartGeometry {
@@ -44,8 +41,6 @@ export interface ChartGeometry {
   actualPath: string;
   /** Polyline path for the predicted portion. */
   forecastPath: string;
-  /** Optional recorded-sales line. */
-  salesPath: string | null;
   /** Closed area between the upper and lower quantiles. */
   bandPath: string | null;
   /** 0–100 position of the boundary between observed and predicted. */
@@ -81,7 +76,6 @@ export function projectSeries(
   options: {
     xTickCount?: number;
     yTickCount?: number;
-    includeSales?: boolean;
     /** Build the hover columns. Skipped for static charts, which never use them. */
     interactive?: boolean;
   } = {}
@@ -89,7 +83,6 @@ export function projectSeries(
   const {
     xTickCount = 6,
     yTickCount = 5,
-    includeSales = false,
     interactive = false,
   } = options;
   const n = points.length;
@@ -99,7 +92,6 @@ export function projectSeries(
     if (p.actual !== null && p.actual > peak) peak = p.actual;
     if (p.upper !== null && p.upper > peak) peak = p.upper;
     if (p.forecast !== null && p.forecast > peak) peak = p.forecast;
-    if (includeSales && p.sales != null && p.sales > peak) peak = p.sales;
   }
 
   // Round the top of the axis up to a tick boundary so labels read cleanly.
@@ -126,16 +118,13 @@ export function projectSeries(
         upper: [],
         yActual: [],
         yForecast: [],
-        ...(includeSales ? { sales: [], ySales: [] } : {}),
       }
     : null;
 
   const actualSeg: string[] = [];
   const forecastSeg: string[] = [];
-  const salesSeg: string[] = [];
   let actualOpen = false;
   let forecastOpen = false;
-  let salesOpen = false;
   const bandTop: string[] = [];
   const bandBottom: string[] = [];
 
@@ -143,7 +132,6 @@ export function projectSeries(
     const p = points[i];
     const x = toX(i);
     const xs = x.toFixed(3);
-    const sales = p.sales ?? null;
 
     if (p.actual === null) {
       actualOpen = false;
@@ -157,15 +145,6 @@ export function projectSeries(
     } else {
       forecastSeg.push(`${forecastOpen ? "L" : "M"}${xs},${toY(p.forecast).toFixed(3)}`);
       forecastOpen = true;
-    }
-
-    if (includeSales) {
-      if (sales === null) {
-        salesOpen = false;
-      } else {
-        salesSeg.push(`${salesOpen ? "L" : "M"}${xs},${toY(sales).toFixed(3)}`);
-        salesOpen = true;
-      }
     }
 
     if (p.lower !== null && p.upper !== null) {
@@ -182,10 +161,6 @@ export function projectSeries(
       hover.upper.push(p.upper);
       hover.yActual.push(p.actual === null ? null : r2(toY(p.actual)));
       hover.yForecast.push(p.forecast === null ? null : r2(toY(p.forecast)));
-      if (hover.sales && hover.ySales) {
-        hover.sales.push(sales);
-        hover.ySales.push(sales === null ? null : r2(toY(sales)));
-      }
     }
   }
 
@@ -213,7 +188,6 @@ export function projectSeries(
     hover,
     actualPath: actualSeg.join(" "),
     forecastPath: forecastSeg.join(" "),
-    salesPath: includeSales ? salesSeg.join(" ") || null : null,
     bandPath,
     cutoffX: r2(toX(cutoffIndex)),
     yTicks,

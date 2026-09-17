@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getJobSequence, getProject } from "@/app/dummy-data";
+import { requireForecastAccess } from "@/auth/session";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { ProcessingProgress } from "./progress";
 
@@ -8,10 +9,17 @@ export const metadata: Metadata = { title: "Processing" };
 
 export default async function ProcessingPage({
   params,
+  searchParams,
 }: PageProps<"/projects/[projectId]/processing">) {
-  const { projectId } = await params;
+  const [{ projectId }, query] = await Promise.all([params, searchParams]);
+  await requireForecastAccess(projectId);
   const [project, sequence] = await Promise.all([getProject(projectId), getJobSequence()]);
   if (!project) notFound();
+
+  // `?job=` is set by the mapping confirmation that queued the run. Without it
+  // there is no live job to follow and the screen explains the pipeline instead.
+  const raw = query.job;
+  const jobId = (Array.isArray(raw) ? raw[0] : raw) ?? null;
 
   return (
     <main className="layout-shell flex-1 py-10">
@@ -29,7 +37,9 @@ export default async function ProcessingPage({
         <Panel>
           <ProcessingProgress
             sequence={sequence}
-            reviewHref={`/projects/${projectId}/review`}
+            reviewHref={`/projects/${projectId}/dashboard`}
+            projectId={projectId}
+            jobId={jobId}
           />
         </Panel>
 

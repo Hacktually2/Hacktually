@@ -1,11 +1,22 @@
 import type { Project } from "./types";
 import { PROJECT_SPARKLINES } from "./series.ts";
 
-/** NEEDS-ENDPOINT: GET /api/v1/projects */
+/**
+ * NEEDS-ENDPOINT: GET /api/v1/projects
+ *
+ * All three are branches of one company, not three separate customers. That is
+ * the shape the product is actually sold into: a distributor with a network of
+ * branches, where a planner at head office sees every branch and a branch
+ * manager sees one. The auth layer claims each of these by `project_id` and
+ * decides who may open it (`auth/db.ts`, DEMO_PROJECT).
+ *
+ * Statuses stay deliberately different — ready, needs review, processing — so
+ * every state of the onboarding flow is reachable from the branch list.
+ */
 export const PROJECTS: Project[] = [
   {
     project_id: "prj-abc",
-    name: "Sales 2026",
+    name: "Cabang Jakarta Pusat",
     organisation: "PT ABC Distribution",
     industry_mode: "ritel",
     dataset_id: "ds_8f21c4",
@@ -21,8 +32,8 @@ export const PROJECTS: Project[] = [
   },
   {
     project_id: "prj-nus",
-    name: "Produksi Q3",
-    organisation: "PT Nusantara Boga",
+    name: "Pabrik Bandung",
+    organisation: "PT ABC Distribution",
     industry_mode: "manufaktur",
     dataset_id: "ds_3b90ae",
     dataset_filename: "pos_export_agustus.csv",
@@ -37,8 +48,8 @@ export const PROJECTS: Project[] = [
   },
   {
     project_id: "prj-sgr",
-    name: "Stock Nasional",
-    organisation: "PT Sinar Gemilang Retail",
+    name: "Cabang Surabaya",
+    organisation: "PT ABC Distribution",
     industry_mode: "ritel",
     dataset_id: "ds_c70d15",
     dataset_filename: "wms_stock_2026.csv",

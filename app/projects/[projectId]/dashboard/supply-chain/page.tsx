@@ -1,15 +1,22 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getProject, getSupplyChain, getValueSimulation } from "@/app/dummy-data";
-import type { ValueSimulation } from "@/app/dummy-data/types";
+import {
+  getPlanningParameters,
+  getProject,
+  getSupplyChain,
+  getValueSimulation,
+} from "@/app/dummy-data";
+import type { PlanningParameters, ValueSimulation } from "@/app/dummy-data/types";
 import { FilterBar, type FilterSpec } from "@/components/dashboard/filter-bar";
 import { InventoryWorkspace } from "@/components/dashboard/inventory-workspace";
+import { PlanningParametersButton } from "@/components/dashboard/planning-parameters";
 import { PostureStrip } from "@/components/dashboard/posture-strip";
 import { ScenarioSimulator } from "@/components/dashboard/scenario-simulator";
+import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import { runSimulation, DEFAULT_SCENARIO } from "@/app/dummy-data/simulation";
-import { simulate } from "./actions";
+import { savePlanningParameters, simulate } from "./actions";
 
 export const metadata: Metadata = { title: "Supply Chain" };
 
@@ -23,13 +30,22 @@ export default async function SupplyChainPage({
 
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
-  const [supply, value] = await Promise.all([
-    getSupplyChain(project.dataset_id, {
-      risk: one(query.risk),
-      location: one(query.location),
-      category: one(query.category),
-    }),
+  const [
+    { data: supply, note: supplyNote },
+    { data: value, note: valueNote },
+    { data: parameters, note: parametersNote },
+  ] = await Promise.all([
+    getSupplyChain(
+      project.dataset_id,
+      {
+        risk: one(query.risk),
+        location: one(query.location),
+        category: one(query.category),
+      },
+      project.industry_mode
+    ),
     getValueSimulation(project.dataset_id),
+    getPlanningParameters(project.dataset_id),
   ]);
 
   // The neutral run is computed here, so the simulator opens showing the real
@@ -71,7 +87,20 @@ export default async function SupplyChainPage({
               {project.organisation} · {project.name} · {supply.mode} mode
             </>
           }
+          action={
+            <PlanningParametersButton
+              parameters={parameters}
+              onSave={async (next) => {
+                "use server";
+                await savePlanningParameters(project.dataset_id, next);
+              }}
+            />
+          }
         />
+        <div className="mt-4 max-w-2xl space-y-2">
+          <DataSource note={supplyNote} />
+          <DataSource note={parametersNote} />
+        </div>
       </div>
 
       <div className="mt-7 animate-enter [--enter-delay:60ms]">
@@ -109,8 +138,9 @@ export default async function SupplyChainPage({
         </Panel>
       </div>
 
-      <div className="mt-5 animate-enter [--enter-delay:360ms]">
-        <ValuePanel value={value} />
+      <div className="mt-5 animate-enter space-y-3 [--enter-delay:360ms]">
+        <DataSource note={valueNote} />
+        <ValuePanel value={value} parameters={parameters} />
       </div>
 
       <section className="mt-10 scroll-mt-28" id="scenario" aria-label="Scenario simulation">
@@ -134,7 +164,19 @@ export default async function SupplyChainPage({
  * Value simulation — the same replenishment policy run under both forecasts
  * across the backtest windows, compared on outcomes rather than error metrics.
  */
-function ValuePanel({ value }: { value: ValueSimulation }) {
+function ValuePanel({
+  value,
+  parameters,
+}: {
+  value: ValueSimulation;
+  parameters: PlanningParameters;
+}) {
+  // Rupiah here is derived from margin and holding cost, which only a user can
+  // supply. Unset means withheld, not estimated (architecture.md: never invent
+  // a missing parameter).
+  const hasValueInputs =
+    parameters.margin_percent !== null && parameters.holding_cost_percent !== null;
+
   const rows = [
     {
       label: "Fill rate",
@@ -148,13 +190,16 @@ function ValuePanel({ value }: { value: ValueSimulation }) {
       model: formatNumber(value.stockout_events_model),
       better: "lower",
     },
-    {
+  ];
+
+  if (hasValueInputs) {
+    rows.push({
       label: "Average inventory held",
       baseline: formatCurrency(value.avg_inventory_value_baseline),
       model: formatCurrency(value.avg_inventory_value_model),
       better: "lower",
-    },
-  ];
+    });
+  }
 
   return (
     <Panel
@@ -208,13 +253,32 @@ function ValuePanel({ value }: { value: ValueSimulation }) {
           <p className="text-body-sm font-medium text-ink-secondary">
             Net benefit over the simulated period
           </p>
-          <p className="mt-1.5 text-metric-lg leading-none font-bold text-brand-deep" data-numeric>
-            {formatCurrency(value.net_benefit_idr)}
-          </p>
-          <p className="mt-2.5 text-meta leading-relaxed text-ink-tertiary">
-            Fewer stockouts and less stock held, using the margin and holding cost configured for
-            this project. Not a projection of future savings.
-          </p>
+          {hasValueInputs ? (
+            <>
+              <p
+                className="mt-1.5 text-metric-lg leading-none font-bold text-brand-deep"
+                data-numeric
+              >
+                {formatCurrency(value.net_benefit_idr)}
+              </p>
+              <p className="mt-2.5 text-meta leading-relaxed text-ink-tertiary">
+                Fewer stockouts and less stock held, at {parameters.margin_percent}% margin and{" "}
+                {parameters.holding_cost_percent}% annual holding cost. Not a projection of
+                future savings.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="mt-1.5 text-metric leading-none font-semibold text-ink-disabled">
+                Unavailable
+              </p>
+              <p className="mt-2.5 text-meta leading-relaxed text-ink-tertiary">
+                A rupiah figure needs your gross margin and holding cost. Set them in planning
+                parameters and this fills in. Fill rate and stockout counts do not depend on
+                them.
+              </p>
+            </>
+          )}
         </div>
       </div>
     </Panel>

@@ -3,12 +3,19 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { getProjects } from "@/app/dummy-data";
 import type { Project } from "@/app/dummy-data/types";
+import {
+  listBranches,
+  listProjectsForUser,
+  visibleForecastProjects,
+  type Project as AuthProject,
+} from "@/auth/db";
 import { Sparkline } from "@/components/charts/bars";
 import { ButtonLink } from "@/components/ui/button";
-import { ArrowRight, Clock, FileText, Plus, Upload } from "@/components/ui/icons";
+import { ArrowRight, Clock, FileText, Plus, Upload, Users } from "@/components/ui/icons";
+import { DataSource } from "@/components/ui/data-source";
 import { PageHeader } from "@/components/ui/panel";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import { getSession } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Projects" };
 
@@ -41,44 +48,150 @@ const STATUS = {
 } as const;
 
 export default async function ProjectsPage() {
-  const [projects, session] = await Promise.all([getProjects(), getSession()]);
+  const session = await requireSession();
+  const { data: projects, note: projectsNote } = await getProjects(session.organisation);
+  const isOwner = session.role === "owner";
+  // Owned projects for an owner, branch-granted ones for a manager. `db.ts`
+  // decides which; this page only renders the answer.
+  const mine = listProjectsForUser(session);
+  // The branch dashboards this person may open. An owner gets every branch of
+  // their network; a manager gets the ones approved for them, and the rest are
+  // not listed at all.
+  const allowed = visibleForecastProjects(
+    session.id,
+    projects.map((p) => p.project_id),
+  );
+  const branchDashboards = projects.filter((p) => allowed.has(p.project_id));
 
   return (
     <main className="layout-shell flex-1 py-10">
       <div className="animate-enter">
         <PageHeader
-          title={`Welcome back, ${session?.name.split(" ")[0] ?? "planner"}`}
-          description="Select a project to continue, or start a new analysis from a fresh dataset."
+          title={`Welcome back, ${session.name.split(" ")[0]}`}
+          description={
+            isOwner
+              ? "Select a project to continue, or start a new analysis from a fresh dataset."
+              : "The projects you have been given branches in."
+          }
           action={
-            <ButtonLink href="/projects/new">
-              <Plus size={16} />
-              New project
-            </ButtonLink>
+            isOwner ? (
+              <ButtonLink href="/projects/new">
+                <Plus size={16} />
+                New project
+              </ButtonLink>
+            ) : undefined
           }
         />
       </div>
 
-      <div className="mt-8 grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
-        {projects.map((project, i) => (
-          <div
-            key={project.project_id}
-            className="animate-enter min-w-0"
-            style={{ "--enter-delay": `${80 + i * 60}ms` } as CSSProperties}
-          >
-            <ProjectCard project={project} />
-            {project.status === "ready" && (
-              <UpdateDataLink projectId={project.project_id} />
-            )}
+      <section className="mt-8">
+        <h2 className="text-section font-semibold text-brand-deep">
+          {isOwner ? "Your projects" : "Shared with you"}
+        </h2>
+        {mine.length === 0 ? (
+          <p className="mt-2 max-w-xl text-body-sm text-ink-secondary">
+            {isOwner
+              ? "Nothing yet. Upload a sales export and confirm which column identifies the branch — the project and its branches are created from that."
+              : "Nothing yet. Open the project link your owner sent you and request the branches you manage."}
+          </p>
+        ) : (
+          <div className="mt-4 grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
+            {mine.map((project, i) => (
+              <div
+                key={project.project_id}
+                className="animate-enter min-w-0"
+                style={{ "--enter-delay": `${60 + i * 50}ms` } as CSSProperties}
+              >
+                <AuthProjectCard project={project} isOwner={isOwner} />
+              </div>
+            ))}
           </div>
-        ))}
-        <div
-          className="animate-enter min-w-0"
-          style={{ "--enter-delay": `${80 + projects.length * 60}ms` } as CSSProperties}
-        >
-          <NewProjectCard />
+        )}
+      </section>
+
+      <h2 className="mt-12 text-section font-semibold text-brand-deep">Branch dashboards</h2>
+      <DataSource note={projectsNote} className="mt-2 max-w-xl" />
+      <p className="mt-1 max-w-xl text-body-sm text-ink-secondary">
+        {isOwner
+          ? "Every branch in your network. Forecasts, demand and inventory per branch."
+          : `${branchDashboards.length} of your branches are ready to open.`}
+      </p>
+
+      {branchDashboards.length === 0 ? (
+        <p className="mt-4 max-w-xl rounded-md border border-dashed border-border-strong/45 px-4 py-6 text-body-sm text-ink-secondary">
+          No branch has been approved for you yet. Once an owner approves one, its dashboard
+          appears here.
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
+          {branchDashboards.map((project, i) => (
+            <div
+              key={project.project_id}
+              className="animate-enter min-w-0"
+              style={{ "--enter-delay": `${80 + i * 60}ms` } as CSSProperties}
+            >
+              <ProjectCard project={project} />
+              {project.status === "ready" && (
+                <UpdateDataLink projectId={project.project_id} />
+              )}
+            </div>
+          ))}
         </div>
-      </div>
+      )}
     </main>
+  );
+}
+
+/**
+ * A project this workspace actually owns or manages, as opposed to a fixture.
+ * It leads to team and access rather than to a dashboard, because that is the
+ * decision waiting on the person looking at it.
+ */
+function AuthProjectCard({
+  project,
+  isOwner,
+}: {
+  project: AuthProject;
+  isOwner: boolean;
+}) {
+  const branches = listBranches(project.project_id);
+
+  return (
+    <Link
+      href={`/projects/${project.project_id}/team`}
+      className="surface-card group flex h-full flex-col p-5 transition-shadow duration-(--duration-base) ease-(--ease-standard) hover:shadow-card"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="truncate text-section font-semibold text-brand-deep">
+            {project.organisation}
+          </h3>
+          <p className="mt-0.5 truncate text-body-sm text-ink-secondary">{project.name}</p>
+        </div>
+        <span className="shrink-0 rounded-full border border-brand-blue/25 bg-brand-blue-soft px-2 py-0.5 text-meta font-semibold text-brand-blue-ink">
+          {isOwner ? "Owner" : "Manager"}
+        </span>
+      </div>
+
+      <div className="mt-4 flex items-center gap-2 text-meta text-ink-tertiary">
+        <FileText size={14} />
+        <span className="truncate">{project.dataset_filename}</span>
+      </div>
+
+      <dl className="mt-4 grid grid-cols-2 gap-3 border-y border-border-subtle py-3">
+        <Stat label="Branches" value={formatNumber(branches.length)} />
+        <Stat label="Rows" value={formatNumber(project.dataset_rows)} />
+      </dl>
+
+      <p className="mt-4 flex items-center gap-1.5 text-body-sm font-semibold text-brand-blue-ink">
+        <Users size={15} />
+        {isOwner ? "Manage team and access" : "Your branches"}
+        <ArrowRight
+          size={15}
+          className="transition-transform duration-(--duration-fast) group-hover:translate-x-0.5"
+        />
+      </p>
+    </Link>
   );
 }
 
@@ -93,10 +206,12 @@ function ProjectCard({ project }: { project: Project }) {
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="truncate text-section font-semibold text-brand-deep">
+          <h3 className="truncate text-section font-semibold text-brand-deep">
+            {project.name}
+          </h3>
+          <p className="mt-0.5 truncate text-body-sm text-ink-secondary">
             {project.organisation}
-          </h2>
-          <p className="mt-0.5 truncate text-body-sm text-ink-secondary">{project.name}</p>
+          </p>
         </div>
         <span
           className={`shrink-0 rounded-full border px-2 py-0.5 text-meta font-semibold ${status.className}`}
@@ -177,19 +292,3 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function NewProjectCard() {
-  return (
-    <Link
-      href="/projects/new"
-      className="flex min-h-56 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border-strong/45 p-5 text-center transition-colors duration-(--duration-base) hover:border-brand-blue hover:bg-brand-blue-soft/40"
-    >
-      <span className="flex size-10 items-center justify-center rounded-full bg-brand-pale text-brand-deep">
-        <Plus size={20} />
-      </span>
-      <span className="mt-1 text-body font-semibold text-brand-deep">New project</span>
-      <span className="max-w-[16rem] text-body-sm text-ink-secondary">
-        Upload a sales export to start a new analysis context.
-      </span>
-    </Link>
-  );
-}

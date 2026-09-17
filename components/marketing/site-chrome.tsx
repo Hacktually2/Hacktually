@@ -150,7 +150,7 @@ export function SiteFooter() {
         />
       </div>
       <div className="layout-shell flex flex-col gap-2 border-t border-border-subtle py-5 text-meta text-ink-tertiary sm:flex-row sm:items-center sm:justify-between">
-        <p>© 2026 DemandX. Data processed and stored in Indonesia.</p>
+        <p>© 2026 DemandX. Deploys to Indonesian cloud infrastructure.</p>
         <p>Prototype build · figures shown are from a demonstration dataset.</p>
       </div>
     </footer>

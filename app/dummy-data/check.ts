@@ -81,6 +81,41 @@ check("every priority action points at a real series", () => {
   }
 });
 
+check("the supply chain headline agrees with the rows", () => {
+  const attention = SUPPLY_CHAIN.rows.filter(
+    (r) => r.risk === "critical" || r.risk === "at_risk"
+  );
+  assert.equal(
+    SUPPLY_CHAIN.headline.attention_count,
+    attention.length,
+    "headline attention_count disagrees with the rows"
+  );
+  assert.equal(
+    SUPPLY_CHAIN.headline.total_count,
+    SUPPLY_CHAIN.rows.length,
+    "headline total_count disagrees with the rows"
+  );
+  assert.equal(
+    SUPPLY_CHAIN.headline.units_to_order,
+    SUPPLY_CHAIN.rows.reduce((s, r) => s + r.recommended_qty, 0),
+    "headline units_to_order disagrees with the rows"
+  );
+});
+
+check("priority action headlines quote the real order quantity", () => {
+  for (const action of OVERVIEW.priority_actions) {
+    const quoted = action.headline.match(/([\d,]+)\s+units/);
+    if (!quoted) continue; // not an order action
+    const row = SUPPLY_CHAIN.rows.find((r) => r.series_id === action.series_id);
+    assert.ok(row, `${action.series_id} missing`);
+    assert.equal(
+      Number(quoted[1].replace(/,/g, "")),
+      row.recommended_qty,
+      `${action.series_id}: headline says ${quoted[1]}, engine says ${row.recommended_qty}`
+    );
+  }
+});
+
 check("unavailable metrics carry a reason and no value", () => {
   for (const kpi of OVERVIEW.kpis) {
     if (kpi.value === null) assert.ok(kpi.unavailable_reason, `${kpi.key} has no reason`);
