@@ -261,7 +261,7 @@ def _aggregate_chart(dataset_id: str, series_filter: set[str] | None = None) -> 
     exactly the moment the eye is drawn to.
     """
     canonical, frequency, _, _ = svc._load_canonical(dataset_id)
-    if series_filter:
+    if series_filter is not None:
         canonical = canonical.filter(pl.col(SERIES_ID).is_in(list(series_filter)))
 
     history = (
@@ -273,7 +273,9 @@ def _aggregate_chart(dataset_id: str, series_filter: set[str] | None = None) -> 
     sql = """SELECT timestamp, SUM(forecast) f, SUM(lower) lo, SUM(upper) up
              FROM forecasts WHERE dataset_id = ?"""
     args: tuple = (dataset_id,)
-    if series_filter:
+    if series_filter is not None and not series_filter:
+        sql += " AND 1 = 0"
+    elif series_filter:
         marks = ",".join("?" * len(series_filter))
         sql += f" AND series_id IN ({marks})"
         args = (dataset_id, *series_filter)
@@ -414,9 +416,20 @@ def _sparkline(dataset_id: str, points: int = 16) -> list[float]:
 
 # -------------------------------------------------------------------- overview
 
-def overview(dataset_id: str) -> dict:
+def overview(dataset_id: str, location: str | None = None) -> dict:
+    """Overview for the whole network, or for one branch.
+
+    Scoping happens here, before anything is serialised. A branch manager's
+    overview built from every branch and filtered in the browser is a display
+    filter, not a security boundary — the other branches' KPIs and priority
+    actions would already be in the response.
+    """
     _dataset_row(dataset_id)
     rows = _enriched_rows(dataset_id)
+    scoped_series: set[str] | None = None
+    if location:
+        rows = [r for r in rows if r["location_id"] == location]
+        scoped_series = {r["series_id"] for r in rows}
     health = svc.get_health(dataset_id) or {}
     horizon = _horizon_days(dataset_id)
 
@@ -446,7 +459,7 @@ def overview(dataset_id: str) -> dict:
             "unavailable_reason": None,
             "unit": "units",
             "context": f"Next {horizon} days · {len(rows)} series",
-            "comparison": _demand_comparison(dataset_id, total_forecast, horizon),
+            "comparison": _demand_comparison(dataset_id, total_forecast, horizon, scoped_series),
             "accent": "forecast",
             "href": None,
         },
@@ -515,7 +528,8 @@ def overview(dataset_id: str) -> dict:
         "dataset_id": dataset_id,
         "generated_at": _now(),
         "kpis": kpis,
-        "demand_chart": _aggregate_chart(dataset_id),
+        "demand_chart": _aggregate_chart(dataset_id, scoped_series),
+        "scope": {"location_id": location} if location else {"location_id": None},
         "inventory": {
             "bands": bands,
             "total_series": len(rows),
@@ -527,9 +541,16 @@ def overview(dataset_id: str) -> dict:
     }
 
 
-def _demand_comparison(dataset_id: str, total_forecast: float, horizon: int) -> dict | None:
+def _demand_comparison(
+    dataset_id: str,
+    total_forecast: float,
+    horizon: int,
+    series: set[str] | None = None,
+) -> dict | None:
     """The horizon against the same number of days immediately before it."""
     canonical, frequency, _, _ = svc._load_canonical(dataset_id)
+    if series is not None:
+        canonical = canonical.filter(pl.col(SERIES_ID).is_in(list(series)))
     end = canonical.get_column(TIMESTAMP).max()
     if end is None:
         return None

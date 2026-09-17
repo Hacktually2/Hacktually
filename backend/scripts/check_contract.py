@@ -204,6 +204,41 @@ def main() -> None:
     ]
     check("summary counts match rows", not summary_mismatch, "; ".join(summary_mismatch))
 
+    # 13. Branch scoping is a security boundary, not a display filter (gap B11).
+    locations = sorted({r["location_id"] for r in rows if r["location_id"]})
+    if len(locations) > 1:
+        with TestClient(app) as client:
+            for loc in locations[:2]:
+                scoped = client.get(f"/api/v1/overview/{dataset_id}?location={loc}").json()
+                scoped_rows = client.get(
+                    f"/api/v1/recommendations/{dataset_id}?location={loc}"
+                ).json()["rows"]
+                leak = [
+                    a["series_id"] for a in scoped["priority_actions"]
+                    if not a["series_id"].endswith(f"__{loc}")
+                ]
+                check(f"overview?location={loc} leaks no other branch", not leak, str(leak[:3]))
+                check(
+                    f"overview?location={loc} bands match that branch's rows",
+                    sum(b["series_count"] for b in scoped["inventory"]["bands"]) == len(scoped_rows),
+                )
+                forecasts = client.get(
+                    f"/api/v1/forecasts/{dataset_id}?location={loc}"
+                ).json()["series"]
+                check(
+                    f"forecasts?location={loc} leaks no other branch",
+                    all(s["location_id"] == loc for s in forecasts),
+                )
+
+            # An unknown or mistyped branch must return nothing. An empty filter
+            # that falls back to "no filter" hands a manager the whole network.
+            unknown = client.get(f"/api/v1/overview/{dataset_id}?location=__nope__").json()
+            check(
+                "an unknown branch returns nothing, not the whole network",
+                unknown["inventory"]["total_series"] == 0 and not unknown["priority_actions"]
+                and not unknown["demand_chart"]["points"],
+            )
+
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 
