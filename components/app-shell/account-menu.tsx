@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { signOut } from "@/app/login/actions";
+import { signOut } from "@/auth/actions";
 import { loadActivity } from "@/app/projects/actions";
 import type { ActivityEvent, Session } from "@/app/dummy-data/types";
 import { ChevronDown, Clock, LogOut, Settings } from "@/components/ui/icons";

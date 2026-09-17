@@ -1,10 +1,13 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useMemo, useState, useTransition } from "react";
+import { useActionState, useMemo, useState } from "react";
+import { useFormStatus } from "react-dom";
 import type { MappingField, MappingResponse } from "@/app/dummy-data/types";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Info } from "@/components/ui/icons";
+import { AlertTriangle, ChevronDown, Info } from "@/components/ui/icons";
+import { confirmMapping, type ConfirmMappingState } from "./actions";
+
+const INITIAL: ConfirmMappingState = { error: null };
 
 /**
  * Mapping confirmation (frontend_user_flow.md §7, design.md §55).
@@ -14,7 +17,9 @@ import { ChevronDown, Info } from "@/components/ui/icons";
  * before anything runs.
  *
  * Overrides are held locally and submitted once, which is what
- * POST /api/v1/datasets/{id}/mapping expects.
+ * POST /api/v1/datasets/{id}/mapping expects. Confirming is the point the real
+ * pipeline starts: the backend cleans and profiles the dataset, then a forecast
+ * job is queued and the processing screen follows it.
  */
 const CONFIDENCE = {
   high: { label: "High", className: "text-status-healthy bg-status-healthy-surface" },
@@ -30,14 +35,17 @@ const RESOLVED_BY = {
 
 export function MappingReview({
   mapping,
-  dashboardHref,
+  projectId,
+  datasetId,
+  mode,
 }: {
   mapping: MappingResponse;
-  dashboardHref: string;
+  projectId: string;
+  datasetId: string;
+  mode: "ritel" | "manufaktur";
 }) {
-  const router = useRouter();
+  const [state, action] = useActionState(confirmMapping, INITIAL);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
-  const [pending, startTransition] = useTransition();
 
   const changeCount = useMemo(
     () =>
@@ -49,7 +57,21 @@ export function MappingReview({
   );
 
   return (
-    <div>
+    <form action={action}>
+      <input type="hidden" name="project_id" value={projectId} />
+      <input type="hidden" name="dataset_id" value={datasetId} />
+      <input type="hidden" name="mode" value={mode} />
+      {/* Only changed columns travel; the backend keeps its own detection for
+          everything the user left alone. */}
+      {Object.entries(overrides)
+        .filter(([column, value]) => {
+          const field = mapping.fields.find((f) => f.source_column === column);
+          return field && field.canonical_key !== value;
+        })
+        .map(([column, value]) => (
+          <input key={column} type="hidden" name={`override:${column}`} value={value} />
+        ))}
+
       <div className="overflow-x-auto">
         <table className="w-full min-w-[46rem] border-collapse text-left">
           <thead>
@@ -91,20 +113,35 @@ export function MappingReview({
         </p>
       )}
 
-      <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border-subtle pt-5">
-        <Button
-          size="lg"
-          disabled={pending}
-          onClick={() => startTransition(() => router.push(dashboardHref))}
+      {state.error && (
+        <p
+          className="mt-5 flex items-start gap-2 rounded-sm border border-status-critical/25 bg-status-critical-surface px-3 py-2.5 text-body-sm text-status-critical"
+          role="alert"
         >
-          {pending ? "Confirming…" : "Confirm mapping"}
-        </Button>
-        <p className="text-body-sm text-ink-secondary">
-          {changeCount === 0
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          {state.error}
+        </p>
+      )}
+
+      <Confirm changeCount={changeCount} />
+    </form>
+  );
+}
+
+function Confirm({ changeCount }: { changeCount: number }) {
+  const { pending } = useFormStatus();
+  return (
+    <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border-subtle pt-5">
+      <Button type="submit" size="lg" disabled={pending}>
+        {pending ? "Cleaning and forecasting…" : "Confirm mapping and forecast"}
+      </Button>
+      <p className="text-body-sm text-ink-secondary" aria-live="polite">
+        {pending
+          ? "Reading every row, then queueing the forecast. This takes a moment."
+          : changeCount === 0
             ? "No changes to the detected mapping."
             : `${changeCount} ${changeCount === 1 ? "column" : "columns"} changed. Confirming reprocesses the dataset.`}
-        </p>
-      </div>
+      </p>
     </div>
   );
 }

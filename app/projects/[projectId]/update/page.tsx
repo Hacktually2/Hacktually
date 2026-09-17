@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getProject } from "@/app/dummy-data";
+import { requireForecastAccess } from "@/auth/session";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { previewMerge } from "./actions";
@@ -12,6 +13,7 @@ export default async function UpdateDataPage({
   params,
 }: PageProps<"/projects/[projectId]/update">) {
   const { projectId } = await params;
+  await requireForecastAccess(projectId);
   const project = await getProject(projectId);
   if (!project) notFound();
 

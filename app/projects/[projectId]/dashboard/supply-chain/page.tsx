@@ -12,6 +12,7 @@ import { InventoryWorkspace } from "@/components/dashboard/inventory-workspace";
 import { PlanningParametersButton } from "@/components/dashboard/planning-parameters";
 import { PostureStrip } from "@/components/dashboard/posture-strip";
 import { ScenarioSimulator } from "@/components/dashboard/scenario-simulator";
+import { DataSource } from "@/components/ui/data-source";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import { runSimulation, DEFAULT_SCENARIO } from "@/app/dummy-data/simulation";
@@ -29,12 +30,20 @@ export default async function SupplyChainPage({
 
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
-  const [supply, value, parameters] = await Promise.all([
-    getSupplyChain(project.dataset_id, {
-      risk: one(query.risk),
-      location: one(query.location),
-      category: one(query.category),
-    }),
+  const [
+    { data: supply, note: supplyNote },
+    { data: value, note: valueNote },
+    { data: parameters, note: parametersNote },
+  ] = await Promise.all([
+    getSupplyChain(
+      project.dataset_id,
+      {
+        risk: one(query.risk),
+        location: one(query.location),
+        category: one(query.category),
+      },
+      project.industry_mode
+    ),
     getValueSimulation(project.dataset_id),
     getPlanningParameters(project.dataset_id),
   ]);
@@ -88,6 +97,10 @@ export default async function SupplyChainPage({
             />
           }
         />
+        <div className="mt-4 max-w-2xl space-y-2">
+          <DataSource note={supplyNote} />
+          <DataSource note={parametersNote} />
+        </div>
       </div>
 
       <div className="mt-7 animate-enter [--enter-delay:60ms]">
@@ -125,7 +138,8 @@ export default async function SupplyChainPage({
         </Panel>
       </div>
 
-      <div className="mt-5 animate-enter [--enter-delay:360ms]">
+      <div className="mt-5 animate-enter space-y-3 [--enter-delay:360ms]">
+        <DataSource note={valueNote} />
         <ValuePanel value={value} parameters={parameters} />
       </div>
 

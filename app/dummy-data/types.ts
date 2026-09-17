@@ -297,30 +297,66 @@ export interface ReorderExplanation {
 }
 
 /** GET /api/v1/recommendations/{dataset_id} */
+/**
+ * One row of the inventory workspace.
+ *
+ * Nullable fields are the ones the live backend does not send today. `null`
+ * means "not measurable from this response", never zero, and the table renders
+ * a dash with the reason rather than a number the frontend made up. Each one is
+ * a numbered gap in migration-report.md; when the backend starts sending it,
+ * drop the `| null` and TypeScript will point at every render site.
+ */
 export interface InventoryRow {
   series_id: string;
   item_id: string;
   item_name: string;
   location_id: string;
   location: string;
+  /** Gap B6 — no category on a recommendation. */
+  category: string | null;
+  /** Read out of the reorder explanation. */
+  current_stock: number | null;
+  /** Gap B5 — the horizon total is not broken out. */
+  forecast_demand: number | null;
+  lead_time_demand: number | null;
+  safety_stock: number | null;
+  /** Gap B5 — would require the frontend to divide stock by demand. */
+  coverage_days: number | null;
+  days_until_stockout: number | null;
+  risk: RiskLevel;
+  risk_label: string;
+  recommended_qty: number;
+  /** Gap B5 — only embedded in an explanation label today. */
+  lead_time_days: number | null;
+  moq: number | null;
+  demand_class: DemandClass;
+  model: string;
+  wape_percent: number | null;
+  explanation: ReorderExplanation;
+  /** Gap B1 — no history endpoint, so no sparkline. */
+  recent_demand: number[] | null;
+}
+
+/**
+ * An inventory row with nothing missing.
+ *
+ * The fixtures are hand-built and carry every field, so the screens and checks
+ * that only ever run against fixtures — the scenario simulator, the planning
+ * parameters, the fixture self-check — can keep treating them as non-null. Live
+ * rows are plain `InventoryRow` and must handle the nulls.
+ */
+export type CompleteInventoryRow = InventoryRow & {
   category: string;
   current_stock: number;
   forecast_demand: number;
   lead_time_demand: number;
   safety_stock: number;
   coverage_days: number;
-  days_until_stockout: number | null;
-  risk: RiskLevel;
-  risk_label: string;
-  recommended_qty: number;
   lead_time_days: number;
   moq: number;
-  demand_class: DemandClass;
-  model: string;
   wape_percent: number;
-  explanation: ReorderExplanation;
   recent_demand: number[];
-}
+};
 
 export interface SupplyChainResponse {
   dataset_id: string;

@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useRef, useState, useTransition } from "react";
 import type { MergePreview } from "@/app/dummy-data/types";
+import type { Sourced } from "@/lib/backend/source";
+import { DataSource } from "@/components/ui/data-source";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, ArrowRight, Check, FileText, Info, Upload, X } from "@/components/ui/icons";
 import { Panel } from "@/components/ui/panel";
@@ -32,13 +34,18 @@ export function MergeFlow({
   projectId: string;
   datasetId: string;
   /** Server action standing in for POST /datasets/{id}/append?dry_run=true */
-  previewFor: (datasetId: string, filename: string) => Promise<MergePreview>;
+  previewFor: (
+    projectId: string,
+    datasetId: string,
+    filename: string,
+  ) => Promise<Sourced<MergePreview>>;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<Step>("choose");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<MergePreview | null>(null);
+  const [previewNote, setPreviewNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -60,8 +67,9 @@ export function MergeFlow({
 
   async function runPreview() {
     if (!file) return;
-    const result = await previewFor(datasetId, file.name);
-    setPreview(result);
+    const result = await previewFor(projectId, datasetId, file.name);
+    setPreview(result.data);
+    setPreviewNote(result.note);
     setStep("preview");
   }
 
@@ -69,6 +77,7 @@ export function MergeFlow({
     return (
       <MergeReview
         preview={preview}
+        note={previewNote}
         pending={pending}
         onBack={() => {
           setPreview(null);
@@ -178,11 +187,13 @@ export function MergeFlow({
 
 function MergeReview({
   preview,
+  note,
   pending,
   onBack,
   onConfirm,
 }: {
   preview: MergePreview;
+  note: string | null;
   pending: boolean;
   onBack: () => void;
   onConfirm: () => void;
@@ -191,6 +202,7 @@ function MergeReview({
 
   return (
     <div className="space-y-5">
+      <DataSource note={note} />
       <Panel
         title="What this merge will do"
         description={`${preview.incoming_filename} · ${formatNumber(preview.incoming_rows)} rows read`}

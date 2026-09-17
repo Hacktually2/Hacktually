@@ -6,9 +6,47 @@ import type { InventoryRow } from "@/app/dummy-data/types";
 import { MiniBars } from "@/components/charts/bars";
 import { ChevronUpDown, Search, X } from "@/components/ui/icons";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Unavailable } from "@/components/ui/data-source";
 import { Field } from "@/components/ui/panel";
 import { DEMAND_COLOR, DemandClassBadge, RiskBadge, RiskDot } from "@/components/ui/status";
 import { formatDays, formatNumber, formatPercent } from "@/lib/format";
+
+/**
+ * Why a cell is empty.
+ *
+ * The live backend sends a recommendation, not an inventory position: it
+ * carries ids and the decomposition of the order quantity, and nothing else.
+ * Rather than filling the gap with a number this component computed, each one
+ * says what is missing and the reason is one hover away. Fixture rows have all
+ * of these, so this only shows on live data.
+ */
+const MISSING = {
+  current_stock: "The forecasting service does not report stock on hand for this series.",
+  forecast_demand: "The service sends lead-time demand, not a horizon total.",
+  lead_time_demand: "Not included in this recommendation.",
+  coverage_days: "Needs stock on hand and horizon demand, which the service does not send.",
+  lead_time_days: "Lead time is an engine constant and is not returned per series.",
+  recent_demand: "No history endpoint, so there is nothing to chart here yet.",
+} as const;
+
+/** A unit count the backend sent, or a dash explaining why there is none. */
+function Units({
+  value,
+  reason,
+  suffix = "",
+}: {
+  value: number | null;
+  reason: string;
+  suffix?: string;
+}) {
+  if (value === null) return <Unavailable reason={reason} />;
+  return (
+    <>
+      {formatNumber(value)}
+      {suffix}
+    </>
+  );
+}
 
 /**
  * Inventory vs demand (frontend_user_flow.md §31, §35; design.md §47–§51).
@@ -71,6 +109,11 @@ export function InventoryWorkspace({ rows }: { rows: InventoryRow[] }) {
         case "recommended_qty":
           return (a.recommended_qty - b.recommended_qty) * dir;
         case "coverage_days":
+          // Rows without coverage sort last in either direction rather than
+          // being treated as zero days of cover, which would rank them as the
+          // most urgent thing on the page.
+          if (a.coverage_days === null) return 1;
+          if (b.coverage_days === null) return -1;
           return (a.coverage_days - b.coverage_days) * dir;
         default:
           return (RISK_ORDER[a.risk] - RISK_ORDER[b.risk]) * dir;
@@ -189,14 +232,20 @@ const Row = memo(function Row({
       </td>
       <td className="px-3 py-2.5 text-body-sm text-ink-secondary">{row.location}</td>
       <td className="px-3 py-2.5 text-right text-body-sm text-ink" data-numeric>
-        {formatNumber(row.current_stock)}
+        <Units value={row.current_stock} reason={MISSING.current_stock} />
       </td>
       <td className="px-3 py-2.5 text-right text-body-sm text-ink" data-numeric>
-        {formatNumber(row.forecast_demand)}
+        <Units value={row.forecast_demand} reason={MISSING.forecast_demand} />
       </td>
       <td className="px-3 py-2.5 text-right text-body-sm text-ink" data-numeric>
-        {row.coverage_days}d
-        <span className="ml-1 text-meta text-ink-tertiary">/ {row.lead_time_days}d LT</span>
+        {row.coverage_days === null ? (
+          <Unavailable reason={MISSING.coverage_days} />
+        ) : (
+          <>{row.coverage_days}d</>
+        )}
+        {row.lead_time_days !== null && (
+          <span className="ml-1 text-meta text-ink-tertiary">/ {row.lead_time_days}d LT</span>
+        )}
       </td>
       <td className="px-3 py-2.5">
         <RiskBadge risk={row.risk} label={row.risk_label} size="sm" />
@@ -261,20 +310,33 @@ function DetailDrawer({ row, onClose }: { row: InventoryRow; onClose: () => void
         </div>
 
         <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4 rounded-md bg-surface-card p-4">
-          <Field label="Current stock">{formatNumber(row.current_stock)} units</Field>
+          <Field label="Current stock">
+            <Units value={row.current_stock} reason={MISSING.current_stock} suffix=" units" />
+          </Field>
           <Field label="Forecast demand" hint="Next 30 days">
-            {formatNumber(row.forecast_demand)} units
+            <Units value={row.forecast_demand} reason={MISSING.forecast_demand} suffix=" units" />
           </Field>
-          <Field label="Lead-time demand" hint={`Over ${row.lead_time_days} days`}>
-            {formatNumber(row.lead_time_demand)} units
+          <Field
+            label="Lead-time demand"
+            hint={row.lead_time_days === null ? undefined : `Over ${row.lead_time_days} days`}
+          >
+            <Units value={row.lead_time_demand} reason={MISSING.lead_time_demand} suffix=" units" />
           </Field>
-          <Field label="Safety stock">{formatNumber(row.safety_stock)} units</Field>
+          <Field label="Safety stock">
+            <Units value={row.safety_stock} reason={MISSING.lead_time_demand} suffix=" units" />
+          </Field>
           {/* Cover and days-until-stockout are the same figure under a flat
               demand assumption, so only the decision-relevant one is shown
               here. Replenishment lead time is the number worth pairing it
               with — it is what makes the projection urgent or not. */}
           <Field label="Until projected stockout">{formatDays(row.days_until_stockout)}</Field>
-          <Field label="Replenishment lead time">{formatDays(row.lead_time_days)}</Field>
+          <Field label="Replenishment lead time">
+            {row.lead_time_days === null ? (
+              <Unavailable reason={MISSING.lead_time_days} />
+            ) : (
+              formatDays(row.lead_time_days)
+            )}
+          </Field>
         </dl>
 
         {/* The recommendation as a sum the planner can check line by line. */}
@@ -307,10 +369,12 @@ function DetailDrawer({ row, onClose }: { row: InventoryRow; onClose: () => void
                   </dd>
                 </div>
               </dl>
-              <p className="mt-3 text-meta text-ink-tertiary">
-                Minimum order quantity {formatNumber(row.moq)} units · lead time{" "}
-                {row.lead_time_days} days.
-              </p>
+              {row.moq !== null && row.lead_time_days !== null && (
+                <p className="mt-3 text-meta text-ink-tertiary">
+                  Minimum order quantity {formatNumber(row.moq)} units · lead time{" "}
+                  {row.lead_time_days} days.
+                </p>
+              )}
             </>
           ) : (
             <p className="mt-1.5 text-body text-ink-secondary">
@@ -324,14 +388,23 @@ function DetailDrawer({ row, onClose }: { row: InventoryRow; onClose: () => void
           <h3 className="text-body font-semibold text-brand-deep">Recent demand</h3>
           <p className="mt-0.5 text-meta text-ink-tertiary">Last 12 periods</p>
           <div className="mt-3">
-            <MiniBars
-              values={row.recent_demand}
-              color={DEMAND_COLOR[row.demand_class]}
-            />
+            {row.recent_demand === null ? (
+              <p className="py-3 text-body-sm text-ink-secondary">
+                {MISSING.recent_demand}
+              </p>
+            ) : (
+              <MiniBars values={row.recent_demand} color={DEMAND_COLOR[row.demand_class]} />
+            )}
           </div>
           <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-border-subtle pt-3">
             <Field label="Model">{row.model}</Field>
-            <Field label="WAPE">{formatPercent(row.wape_percent)}</Field>
+            <Field label="WAPE">
+              {row.wape_percent === null ? (
+                <Unavailable reason="No validation score for this series." />
+              ) : (
+                formatPercent(row.wape_percent)
+              )}
+            </Field>
           </dl>
           <p className="mt-3 text-meta leading-relaxed text-ink-tertiary">
             The forecasting method is selected from demand characteristics and historical

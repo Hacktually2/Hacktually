@@ -4,7 +4,7 @@ import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "@/components/ui/icons";
-import { signIn, type SignInState } from "./actions";
+import { signIn, type SignInState } from "@/auth/actions";
 
 const INITIAL: SignInState = { error: null };
 
@@ -14,6 +14,8 @@ export interface DemoCredential {
   password: string;
   name: string;
   role: string;
+  /** What this account is for — the roles do genuinely different things. */
+  blurb: string;
 }
 
 export function LoginForm({ demoAccounts }: { demoAccounts: DemoCredential[] }) {
@@ -68,10 +70,10 @@ export function LoginForm({ demoAccounts }: { demoAccounts: DemoCredential[] }) 
       {demoAccounts.length > 0 && (
         <section className="mt-6 rounded-md border border-dashed border-border-strong/40 bg-surface-sunken/50 p-4">
           <h2 className="text-meta font-semibold tracking-wide text-ink-tertiary uppercase">
-            Demo account
+            Demo accounts
           </h2>
           <p className="mt-1 text-meta text-ink-tertiary">
-            This is a prototype build. Sign in with the account below.
+            This is a prototype build. Owner and manager see different products.
           </p>
 
           <ul className="mt-3 space-y-3">
@@ -79,9 +81,14 @@ export function LoginForm({ demoAccounts }: { demoAccounts: DemoCredential[] }) 
               <li key={account.email}>
                 <p className="text-body-sm font-semibold text-brand-deep">
                   {account.name}
-                  <span className="ml-1.5 font-normal text-ink-tertiary">{account.role}</span>
+                  <span className="ml-1.5 rounded-full border border-border-subtle px-1.5 py-0.5 text-meta font-medium text-ink-tertiary">
+                    {account.role}
+                  </span>
                 </p>
-                <dl className="mt-1 space-y-0.5">
+                <p className="mt-0.5 text-meta leading-relaxed text-ink-tertiary">
+                  {account.blurb}
+                </p>
+                <dl className="mt-1.5 space-y-0.5">
                   <Credential label="Email" value={account.email} />
                   <Credential label="Password" value={account.password} />
                 </dl>
