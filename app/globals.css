@@ -1,25 +1,505 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   DESIGN SYSTEM — single source of truth.
+   Every colour, radius, shadow, blur, duration and layer used anywhere in the
+   product is declared here. Components consume tokens, never literals.
+   Reference: design.md §5–§13 (colour), §27 (radius), §66 (spacing),
+   §98 (tokens), §99 (layering).
+   ========================================================================== */
+
+@theme {
+  /* --- Canonical palette (design.md §5) — the only 7 literal colours ----- */
+  --color-brand-deep: #03436d;
+  --color-brand-blue: #288dce;
+  --color-brand-pale: #cfe8f5;
+  --color-accent-lavender: #da9dfd;
+  --color-accent-purple: #c76cfc;
+  --color-surface-neutral: #eeeeee;
+  --color-ink: #000000;
+
+  /* --- Derived brand steps. All mixed from the 7 above, so the identity
+         cannot drift as the system grows. ---------------------------------- */
+  --color-brand-deep-hover: color-mix(in oklab, var(--color-brand-deep) 88%, black);
+  --color-brand-deep-soft: color-mix(in oklab, var(--color-brand-deep) 8%, white);
+  --color-brand-blue-hover: color-mix(in oklab, var(--color-brand-blue) 86%, black);
+  --color-brand-blue-soft: color-mix(in oklab, var(--color-brand-blue) 10%, white);
+  --color-brand-pale-soft: color-mix(in oklab, var(--color-brand-pale) 45%, white);
+  --color-brand-pale-deep: color-mix(in oklab, var(--color-brand-pale) 72%, var(--color-brand-blue));
+  --color-accent-purple-soft: color-mix(in oklab, var(--color-accent-purple) 12%, white);
+  --color-accent-lavender-soft: color-mix(in oklab, var(--color-accent-lavender) 22%, white);
+
+  /* --- Surfaces (design.md §14) ---------------------------------------- */
+  --color-surface-page: color-mix(in oklab, var(--color-brand-pale) 26%, white);
+  --color-surface-card: #ffffff;
+  --color-surface-sunken: color-mix(in oklab, var(--color-surface-neutral) 55%, white);
+  --color-surface-tint: color-mix(in oklab, var(--color-brand-pale) 34%, white);
+  --color-surface-inverse: var(--color-brand-deep);
+
+  /* --- Ink (design.md §12: never pure black for everything) ------------- */
+  --color-ink-secondary: color-mix(in oklab, var(--color-ink) 68%, white);
+  --color-ink-tertiary: color-mix(in oklab, var(--color-ink) 52%, white);
+  --color-ink-disabled: color-mix(in oklab, var(--color-ink) 34%, white);
+  --color-ink-on-deep: color-mix(in oklab, var(--color-brand-pale) 62%, white);
+  --color-ink-on-brand: #ffffff;
+
+  /* --- Borders (design.md §11, §23) ------------------------------------- */
+  --color-border-subtle: color-mix(in oklab, var(--color-surface-neutral) 78%, white);
+  --color-border-default: var(--color-surface-neutral);
+  --color-border-strong: color-mix(in oklab, var(--color-brand-deep) 22%, white);
+  --color-border-glass: color-mix(in oklab, white 62%, transparent);
+  --color-border-focus: var(--color-brand-blue);
+
+  /* --- Status semantics (design.md §49: colour is never the only signal) - */
+  --color-status-healthy: #1f7a5c;
+  --color-status-healthy-surface: color-mix(in oklab, #1f7a5c 12%, white);
+  --color-status-watch: #9a6407;
+  --color-status-watch-surface: color-mix(in oklab, #9a6407 13%, white);
+  --color-status-risk: #b4530d;
+  --color-status-risk-surface: color-mix(in oklab, #b4530d 12%, white);
+  --color-status-critical: #a3231f;
+  --color-status-critical-surface: color-mix(in oklab, #a3231f 10%, white);
+  --color-status-neutral: var(--color-brand-deep);
+  --color-status-neutral-surface: var(--color-brand-pale-soft);
+
+  /* --- Chart series (design.md §37) — fixed meaning across the product --- */
+  --color-series-actual: var(--color-brand-deep);
+  --color-series-forecast: var(--color-accent-purple);
+  --color-series-band: color-mix(in oklab, var(--color-accent-lavender) 34%, white);
+  --color-series-comparison: var(--color-brand-blue);
+  --color-series-sales: var(--color-brand-blue);
+  --color-series-reference: var(--color-surface-neutral);
+  --color-series-grid: color-mix(in oklab, var(--color-surface-neutral) 62%, white);
+  --color-series-axis: var(--color-ink-tertiary);
+
+  /* --- Demand classification (design.md §46) ---------------------------- */
+  --color-demand-smooth: var(--color-brand-blue);
+  --color-demand-erratic: color-mix(in oklab, var(--color-brand-blue) 55%, var(--color-accent-purple));
+  --color-demand-intermittent: var(--color-accent-lavender);
+  --color-demand-lumpy: color-mix(in oklab, var(--color-accent-purple) 78%, var(--color-brand-deep));
+
+  /* --- Radius (design.md §27) ------------------------------------------- */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+
+  /* --- Shadow (design.md §24: soft, broad, never theatrical) ------------- */
+  --shadow-ambient: 0 1px 2px color-mix(in oklab, var(--color-brand-deep) 6%, transparent);
+  --shadow-card: 0 1px 2px color-mix(in oklab, var(--color-brand-deep) 5%, transparent),
+    0 8px 24px -12px color-mix(in oklab, var(--color-brand-deep) 14%, transparent);
+  --shadow-raised: 0 2px 4px color-mix(in oklab, var(--color-brand-deep) 6%, transparent),
+    0 16px 40px -16px color-mix(in oklab, var(--color-brand-deep) 20%, transparent);
+  --shadow-glass: 0 1px 1px color-mix(in oklab, white 55%, transparent) inset,
+    0 10px 30px -18px color-mix(in oklab, var(--color-brand-deep) 32%, transparent);
+  --shadow-overlay: 0 24px 64px -24px color-mix(in oklab, var(--color-brand-deep) 34%, transparent);
+
+  /* --- Typography scale (design.md §29) --------------------------------- */
+  --font-sans: var(--font-plus-jakarta-sans), ui-sans-serif, system-ui, sans-serif;
+  --text-meta: 0.75rem;
+  --text-meta--line-height: 1.1rem;
+  --text-body-sm: 0.8125rem;
+  --text-body-sm--line-height: 1.25rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.375rem;
+  --text-section: 1rem;
+  --text-section--line-height: 1.5rem;
+  --text-page: 1.5rem;
+  --text-page--line-height: 2rem;
+  --text-metric: 1.75rem;
+  --text-metric--line-height: 2.125rem;
+  --text-metric-lg: 2.25rem;
+  --text-metric-lg--line-height: 2.5rem;
+  --text-display: 2.75rem;
+  --text-display--line-height: 3.125rem;
+  --text-display-lg: 3.5rem;
+  --text-display-lg--line-height: 3.875rem;
+
+  /* --- Motion (design.md §60, §64) -------------------------------------- */
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-instant: 90ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 320ms;
+}
+
+/* --- Tokens outside Tailwind's theme namespaces -------------------------- */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Glass material — three calibrated recipes, never one universal .glass
+     (design.md §21, §96). */
+  --glass-nav-bg: color-mix(in oklab, white 76%, transparent);
+  --glass-nav-blur: 18px;
+  --glass-control-bg: color-mix(in oklab, white 62%, transparent);
+  --glass-control-blur: 14px;
+  --glass-overlay-bg: color-mix(in oklab, white 86%, transparent);
+  --glass-overlay-blur: 26px;
+
+  /* Layering (design.md §99) */
+  --z-content: 10;
+  --z-sticky: 20;
+  --z-nav: 30;
+  --z-popover: 40;
+  --z-drawer: 50;
+  --z-modal: 60;
+  --z-critical: 70;
+
+  /* Layout rhythm */
+  --layout-max: 1440px;
+  --layout-gutter: 2rem;
+  --topbar-height: 56px;
+  --tabbar-height: 48px;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-plus-jakarta-sans);
-}
-
-@media (prefers-color-scheme: dark) {
+@media (max-width: 48rem) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --layout-gutter: 1rem;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
+/* ==========================================================================
+   BASE
+   ========================================================================== */
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-surface-page);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Atmosphere, not decoration: two very soft light sources at the page
+     boundary. Fixed + no animation, so it never costs a repaint.
+     (design.md §15) */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    /* Behind all content, so no page needs its own stacking workaround. */
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        62rem 32rem at 8% -8%,
+        color-mix(in oklab, var(--color-brand-pale) 62%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        48rem 28rem at 96% 0%,
+        color-mix(in oklab, var(--color-accent-lavender) 14%, transparent),
+        transparent 68%
+      );
+  }
+
+  /* Numbers are first-class content (design.md §30). */
+  th,
+  td,
+  output,
+  time,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background-color: var(--color-brand-pale);
+    color: var(--color-brand-deep);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+}
+
+/* ==========================================================================
+   MATERIAL UTILITIES
+   Glass is a functional layer, never the default content surface
+   (design.md §16–§20, §80).
+   ========================================================================== */
+
+@utility glass-navigation {
+  background-color: var(--glass-nav-bg);
+  backdrop-filter: blur(var(--glass-nav-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(150%);
+  border-bottom: 1px solid var(--color-border-glass);
+  box-shadow: var(--shadow-glass);
+}
+
+@utility glass-control {
+  background-color: var(--glass-control-bg);
+  backdrop-filter: blur(var(--glass-control-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-control-blur)) saturate(140%);
+  border: 1px solid var(--color-border-glass);
+  box-shadow: var(--shadow-ambient);
+}
+
+@utility glass-overlay {
+  background-color: var(--glass-overlay-bg);
+  backdrop-filter: blur(var(--glass-overlay-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--glass-overlay-blur)) saturate(160%);
+  border: 1px solid var(--color-border-glass);
+  box-shadow: var(--shadow-overlay);
+}
+
+/* Stable analytical surfaces — where charts, tables and KPIs live. */
+@utility surface-card {
+  background-color: var(--color-surface-card);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+@utility surface-tinted {
+  background-color: var(--color-surface-tint);
+  border: 1px solid color-mix(in oklab, var(--color-brand-pale) 74%, white);
+  border-radius: var(--radius-md);
+}
+
+@utility surface-elevated {
+  background-color: var(--color-surface-card);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+@utility layout-shell {
+  width: 100%;
+  max-width: var(--layout-max);
+  margin-inline: auto;
+  padding-inline: var(--layout-gutter);
+}
+
+/* ==========================================================================
+   ENTRY MOTION (design.md §60, §102)
+
+   Purposeful, not decorative: content settles into place once on arrival and
+   then stays still. This is an operational dashboard someone reads for hours,
+   so movement is short (≈300ms), small (10px), and never loops.
+
+   Only opacity and transform are animated — both composite on the GPU and
+   neither triggers layout, so a page of cards costs nothing to bring in.
+
+   Stagger is driven by --enter-delay, set per element either with a Tailwind
+   arbitrary property ([--enter-delay:60ms]) or inline for mapped lists.
+   ========================================================================== */
+
+@keyframes enter-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes enter-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes enter-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* `backwards` holds the start state during the delay, so a staggered item
+   never flashes at full opacity before its turn. */
+@utility animate-enter {
+  animation: enter-rise var(--duration-slow) var(--ease-emphasized) backwards;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+/* For large or dense surfaces — long tables, the forecast chart — where a
+   translate would mean repainting a lot of content for little benefit. */
+@utility animate-enter-fade {
+  animation: enter-fade var(--duration-base) var(--ease-standard) backwards;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+@utility animate-enter-drawer {
+  animation: enter-from-right var(--duration-base) var(--ease-emphasized);
+}
+
+@utility animate-enter-backdrop {
+  animation: enter-fade var(--duration-fast) var(--ease-standard);
+}
+
+/* --------------------------------------------------------------------------
+   MARKETING MOTION
+
+   The public page can carry more movement than the workspace: it is read once,
+   not worked in for hours. It still earns it — every effect below is a reveal
+   that runs a single time and then leaves the content alone.
+   -------------------------------------------------------------------------- */
+
+/* Headline lines rise out of a clipping mask. The parent supplies the mask, so
+   this animates only the inner span. */
+@keyframes enter-line {
+  from {
+    transform: translateY(105%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@utility animate-enter-line {
+  animation: enter-line 0.72s var(--ease-emphasized) backwards;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+/* The hero product panel settles in from slightly small and low. */
+@keyframes enter-panel {
+  from {
+    opacity: 0;
+    transform: translateY(22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility animate-enter-panel {
+  animation: enter-panel 0.8s var(--ease-emphasized) backwards;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+/* Faint engineering grid behind the hero, masked so it dissolves rather than
+   ending on a hard edge. Reads as technical texture, not decoration
+   (design.md §15 allows subtle depth at the page boundary). */
+@utility hero-grid {
+  --grid-line: color-mix(in oklab, var(--color-brand-deep) 8%, transparent);
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: radial-gradient(120% 80% at 50% 0%, black 0%, transparent 72%);
+  -webkit-mask-image: radial-gradient(120% 80% at 50% 0%, black 0%, transparent 72%);
+}
+
+/* --------------------------------------------------------------------------
+   SCROLL REVEAL
+
+   Driven by the <Reveal> component, which flips data-reveal to "in" the first
+   time an element enters the viewport. A transition rather than an animation:
+   there is no fill-mode to get wrong, and the reduced-motion rule below zeroes
+   both the duration and the delay.
+
+   Content is hidden before reveal, so anything above the fold uses the plain
+   CSS entry utilities instead, which need no JavaScript.
+   -------------------------------------------------------------------------- */
+
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.65s var(--ease-emphasized),
+    transform 0.65s var(--ease-emphasized);
+  transition-delay: var(--enter-delay, 0ms);
+}
+
+[data-reveal="in"] {
+  opacity: 1;
+  transform: none;
+}
+
+/* A heading that wipes up out of a clipping mask when its Reveal fires. The
+   mask is this element; the child is what moves. Only meaningful inside a
+   <Reveal>, since that is what flips the ancestor attribute. */
+.reveal-line {
+  display: block;
+  overflow: hidden;
+  /* Room for descenders, which the mask would otherwise clip. */
+  padding-bottom: 0.1em;
+}
+
+.reveal-line > * {
+  display: block;
+  transform: translateY(105%);
+  transition: transform 0.8s var(--ease-emphasized);
+  transition-delay: var(--enter-delay, 0ms);
+}
+
+[data-reveal="in"] .reveal-line > * {
+  transform: none;
+}
+
+/* Reduced motion never hides anything in the first place, so the content is
+   readable even if the observer never runs or the page has not hydrated. */
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal] {
+    opacity: 1;
+    transform: none;
+  }
+
+  .reveal-line > * {
+    transform: none;
+  }
+}
+
+/* ==========================================================================
+   ACCESSIBILITY FALLBACKS (design.md §62–§64)
+   The product must stay coherent with glass and motion switched off.
+   ========================================================================== */
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-nav-bg: var(--color-surface-card);
+    --glass-nav-blur: 0px;
+    --glass-control-bg: var(--color-surface-card);
+    --glass-control-blur: 0px;
+    --glass-overlay-bg: var(--color-surface-card);
+    --glass-overlay-blur: 0px;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --color-border-subtle: var(--color-border-strong);
+    --color-ink-secondary: var(--color-ink);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    /* Delays must go too. Entry animations fill `backwards`, so a stagger
+       delay left in place would hold content invisible for its full duration
+       even though the animation itself is instant. */
+    animation-delay: 0ms !important;
+    transition-delay: 0ms !important;
+  }
 }
