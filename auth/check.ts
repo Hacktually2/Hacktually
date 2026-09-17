@@ -21,6 +21,7 @@ delete process.env.AUTH_SECRET;
 // Dynamic, so the temp data directory is set before the module opens its file.
 const db = await import("./db.ts");
 const { guessColumn, profileCsv, splitByBranch } = await import("./dataset.ts");
+const checkout = await import("./checkout.ts");
 
 let checks = 0;
 function check(name: string, run: () => void) {
@@ -51,6 +52,56 @@ check("a correct password authenticates, a wrong one does not", () => {
 
 check("email lookup ignores case", () => {
   assert.ok(db.findUserByEmail("SARI.WIJAYA@GMAIL.COM"));
+});
+
+/* ------------------------------------------------------------ checkout gate */
+
+check("only a valid checkout pass unlocks owner sign-up", () => {
+  const pass = checkout.issueCheckoutPass("jaringan");
+  assert.equal(checkout.readCheckoutPass(pass)?.id, "jaringan");
+
+  // Everything that is not a pass this server signed must read as no pass at
+  // all — sign-up creates an OWNER, so a forged one is a self-granted role.
+  for (const junk of [
+    undefined,
+    "",
+    "nonsense",
+    "no-dot-separator",
+    pass.split(".")[0], // payload with the signature stripped off
+    `${pass.split(".")[0]}.forgedsignature`,
+    `${Buffer.from(JSON.stringify({ plan: "jaringan", exp: Date.now() + 1e6 })).toString("base64url")}.x`,
+  ]) {
+    assert.equal(checkout.readCheckoutPass(junk), null, `accepted: ${junk}`);
+  }
+});
+
+check("an expired pass is refused", () => {
+  // Re-signing a payload with a past expiry proves the check is the clock and
+  // not just the signature.
+  const payload = Buffer.from(
+    JSON.stringify({ plan: "jaringan", exp: Date.now() - 1000 }),
+  ).toString("base64url");
+  assert.equal(checkout.readCheckoutPass(`${payload}.${db.sign(payload)}`), null);
+});
+
+check("a pass cannot be issued for a plan nobody can buy", () => {
+  // Derived from the plan list, not hardcoded: this assertion broke once when
+  // the tiers were renamed and the contact-only plan moved.
+  const contactOnly = checkout.PLANS.filter((plan) => plan.contactOnly);
+  assert.ok(contactOnly.length > 0, "expected at least one contact-only plan");
+
+  for (const plan of contactOnly) {
+    // A pass naming it must not resolve, or the web form sells something that
+    // has no price.
+    assert.equal(checkout.readCheckoutPass(checkout.issueCheckoutPass(plan.id)), null, plan.id);
+    assert.equal(checkout.findPlan(plan.id), undefined, plan.id);
+  }
+  assert.equal(checkout.findPlan("bogus"), undefined);
+
+  // And every buyable plan must actually be buyable.
+  for (const plan of checkout.PLANS.filter((p) => !p.contactOnly)) {
+    assert.equal(checkout.findPlan(plan.id)?.id, plan.id, plan.id);
+  }
 });
 
 /* ------------------------------------------------- the seeded demo network */

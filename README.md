@@ -77,6 +77,36 @@ Writes `data/generated/penjualan_abc_distribution.csv` — 138,789 rows, 8 branc
 
 ---
 
+## Buying it (the logged-out flow)
+
+`/#pricing` → **Choose Jaringan** → `/checkout?plan=jaringan` → **Continue** → `/signup` →
+you are an owner, signed in, on `/projects`.
+
+| Plan | Price | Branches |
+| --- | --- | --- |
+| Cabang | Rp 9.000.000 / month | 1 |
+| Jaringan | Rp 18.000.000 / month | up to 10 |
+| Nasional | Rp 40.000.000 / month | up to 40 |
+| Korporat | Custom, annual | unlimited, own tenancy |
+
+`Korporat` is contact-only and has no checkout link — `/checkout?plan=korporat` is a 404,
+asserted in `check:auth`.
+
+**No payment is taken and no card is collected.** There is no processor wired up and no card
+field anywhere in the flow — the checkout page says so on the screen where it happens. When
+Midtrans or Xendit is added, its webhook replaces `completeCheckout` and nothing else in the
+flow changes.
+
+Two things worth knowing about the MVP shortcuts:
+
+- **No email confirmation.** The address is taken on trust, so a typo locks someone out of
+  their own project and a deliberate misspelling squats someone else's address. Wire a
+  confirmation link before real customers.
+- **Sign-up is gated, not open.** It creates an **owner**, so checkout issues a short-lived
+  signed pass and `/signup` refuses without one — otherwise the URL alone would grant the
+  role that decides who sees which branch. `npm run check:auth` asserts that forged,
+  stripped, expired and contact-only-plan passes are all refused.
+
 ## Signing in
 
 Three accounts are seeded on first run and listed on the sign-in screen, with a button that

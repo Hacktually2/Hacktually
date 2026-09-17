@@ -9,6 +9,7 @@ import { ArrowRight, Check, Database, Layers, Shield, Users } from "@/components
 import { getSession } from "@/lib/session";
 import { formatByUnit, formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { DEMAND } from "./dummy-data/demand";
+import { PLANS } from "@/auth/checkout";
 import { HEALTH } from "./dummy-data/onboarding";
 import { OVERVIEW } from "./dummy-data/overview";
 
@@ -33,6 +34,7 @@ export default async function LandingPage() {
         <Branches />
         <Calendar />
         <Deployment />
+        <Pricing signedIn={Boolean(session)} />
         <ClosingCta signedIn={Boolean(session)} />
       </main>
       <SiteFooter />
@@ -531,6 +533,102 @@ function Deployment() {
           </dl>
         </Reveal>
       </div>
+    </section>
+  );
+}
+
+/* --------------------------------------------------------------- pricing */
+
+/**
+ * Pricing, priced per branch network rather than per seat.
+ *
+ * Per-seat pricing fights the product: the whole point is that a branch manager
+ * gets their own scoped view, and charging for each one discourages exactly the
+ * behaviour that makes the forecast better. Branches are the unit of value, so
+ * they are the unit of price.
+ *
+ * Signed-in visitors get "Go to workspace" instead of a buy button — offering
+ * to sell a plan to someone already using one is the kind of detail that makes
+ * a product feel unattended.
+ */
+function Pricing({ signedIn }: { signedIn: boolean }) {
+  return (
+    <section id="pricing" className="layout-shell scroll-mt-20 py-20">
+      <Reveal>
+        <SectionHeading
+          eyebrow="Pricing"
+          title="Priced per branch, not per seat"
+          description="Every branch manager who gets their own scoped view makes the forecast better. Charging per head would discourage the one thing you want people doing."
+        />
+      </Reveal>
+
+      <div className="mt-10 grid items-stretch gap-5 sm:grid-cols-2 xl:grid-cols-4">
+        {PLANS.map((plan, i) => (
+          <Reveal key={plan.id} delay={i * 80} className="h-full">
+            <div
+              className={`flex h-full flex-col p-6 ${
+                plan.featured
+                  ? "surface-card border-brand-blue/40 shadow-card ring-1 ring-brand-blue/20"
+                  : "surface-card"
+              }`}
+            >
+              <div className="flex items-baseline justify-between gap-3">
+                <h3 className="text-section font-semibold text-brand-deep">{plan.name}</h3>
+                {plan.featured && (
+                  <span className="rounded-full bg-brand-pale px-2 py-0.5 text-meta font-semibold text-brand-deep">
+                    Most common
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 min-h-10 text-body-sm text-ink-secondary">{plan.tagline}</p>
+
+              <p className="mt-5 text-metric font-bold text-brand-deep" data-numeric>
+                {plan.price}
+              </p>
+              <p className="text-meta text-ink-tertiary">
+                {plan.cadence} · {plan.branches}
+              </p>
+
+              <ul className="mt-5 flex-1 space-y-2.5 border-t border-border-subtle pt-5">
+                {plan.features.map((feature) => (
+                  <li key={feature} className="flex gap-2.5 text-body-sm text-ink-secondary">
+                    <Check size={16} className="mt-0.5 shrink-0 text-brand-blue-ink" />
+                    {feature}
+                  </li>
+                ))}
+              </ul>
+
+              <div className="mt-6">
+                {signedIn ? (
+                  <ButtonLink href="/projects" variant="secondary" className="w-full">
+                    Go to workspace
+                  </ButtonLink>
+                ) : plan.contactOnly ? (
+                  <ButtonLink href="#deployment" variant="secondary" className="w-full">
+                    Talk to us
+                  </ButtonLink>
+                ) : (
+                  <ButtonLink
+                    href={`/checkout?plan=${plan.id}`}
+                    variant={plan.featured ? "primary" : "secondary"}
+                    className="w-full"
+                  >
+                    Choose {plan.name}
+                    <ArrowRight size={16} />
+                  </ButtonLink>
+                )}
+              </div>
+            </div>
+          </Reveal>
+        ))}
+      </div>
+
+      <Reveal delay={320}>
+        <p className="mt-6 text-center text-meta text-ink-tertiary">
+          Billed in Rupiah. Prices exclude VAT. Every plan reads the CSV your ERP already
+          produces — there is nothing to integrate before you start.
+        </p>
+      </Reveal>
     </section>
   );
 }
