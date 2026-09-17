@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Project } from "@/app/dummy-data/types";
-import { ChevronDown, Database, Plus } from "@/components/ui/icons";
+import { ChevronDown, Database, Plus, Upload } from "@/components/ui/icons";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { DashboardTabs } from "./dashboard-tabs";
 
@@ -26,7 +26,7 @@ export function ProjectBar({
         <div className="flex min-w-0 items-center gap-3">
           <details className="relative">
             <summary className="flex cursor-pointer list-none items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-brand-pale-soft">
-              <Database size={16} className="shrink-0 text-brand-blue" />
+              <Database size={16} className="shrink-0 text-brand-blue-ink" />
               <span className="min-w-0 text-left">
                 <span className="block truncate text-body-sm leading-tight font-semibold text-brand-deep">
                   {project.organisation}
@@ -38,7 +38,7 @@ export function ProjectBar({
               <ChevronDown size={16} className="shrink-0 text-ink-tertiary" />
             </summary>
 
-            <div className="glass-overlay absolute left-0 z-[var(--z-popover)] mt-2 w-80 rounded-md p-2">
+            <div className="surface-popover absolute left-0 z-[var(--z-popover)] mt-2 w-80 max-w-[calc(100vw-2rem)] p-2">
               <p className="px-2 py-1.5 text-meta font-semibold tracking-wide text-ink-tertiary uppercase">
                 Switch project
               </p>
@@ -62,13 +62,22 @@ export function ProjectBar({
                   </span>
                 </Link>
               ))}
-              <Link
-                href="/projects/new"
-                className="mt-1 flex items-center gap-2 border-t border-border-subtle px-2 py-2.5 text-body-sm font-semibold text-brand-blue hover:text-brand-blue-hover"
-              >
-                <Plus size={15} />
-                New project
-              </Link>
+              <div className="mt-1 border-t border-border-subtle pt-1">
+                <Link
+                  href={`/projects/${project.project_id}/update`}
+                  className="flex items-center gap-2 rounded-sm px-2 py-2 text-body-sm font-semibold text-brand-blue-ink hover:bg-brand-pale-soft"
+                >
+                  <Upload size={15} />
+                  Update data
+                </Link>
+                <Link
+                  href="/projects/new"
+                  className="flex items-center gap-2 rounded-sm px-2 py-2 text-body-sm font-semibold text-brand-blue-ink hover:bg-brand-pale-soft"
+                >
+                  <Plus size={15} />
+                  New project
+                </Link>
+              </div>
             </div>
           </details>
 

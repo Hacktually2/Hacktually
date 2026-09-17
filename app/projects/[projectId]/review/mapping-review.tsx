@@ -151,7 +151,7 @@ function MappingRow({
             ))}
           </select>
           {changed && (
-            <span className="mt-1 block text-meta font-medium text-brand-blue">
+            <span className="mt-1 block text-meta font-medium text-brand-blue-ink">
               Changed from {field.detected_field}
             </span>
           )}
@@ -177,7 +177,7 @@ function MappingRow({
       <tr className="border-b border-border-subtle">
         <td colSpan={4} className="px-3 pb-3">
           <details className="group">
-            <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-meta font-medium text-brand-blue hover:text-brand-blue-hover">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-meta font-medium text-brand-blue-ink hover:text-brand-blue-hover">
               <ChevronDown
                 size={13}
                 className="transition-transform duration-(--duration-fast) group-open:rotate-180"

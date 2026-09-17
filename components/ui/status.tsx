@@ -71,7 +71,7 @@ export function RiskDot({ risk }: { risk: RiskLevel }) {
 /* --------------------------------------------------------- demand classes */
 
 const DEMAND_META = {
-  smooth: { label: "Smooth", className: "text-brand-blue bg-brand-blue-soft border-brand-blue/20" },
+  smooth: { label: "Smooth", className: "text-brand-blue-ink bg-brand-blue-soft border-brand-blue/20" },
   erratic: {
     label: "Erratic",
     className: "text-demand-erratic bg-brand-pale-soft border-demand-erratic/20",

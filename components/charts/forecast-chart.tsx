@@ -31,6 +31,9 @@ export function ForecastChart({
   const geo = projectSeries(series.points, series.cutoff_index, {
     includeSales: showSales,
     xTickCount: 6,
+    // Static charts skip building the hover columns entirely, so a non
+    // interactive chart sends no per-point data to the client at all.
+    interactive,
   });
 
   return (
@@ -124,7 +127,7 @@ export function ForecastChart({
 
           {/* NOW boundary label */}
           <span
-            className="pointer-events-none absolute -top-2 z-[var(--z-content)] -translate-x-1/2 rounded-xs bg-brand-deep px-1.5 py-0.5 text-[0.625rem] font-semibold tracking-wide text-ink-on-brand uppercase"
+            className="pointer-events-none absolute -top-2 z-[var(--z-content)] -translate-x-1/2 rounded-xs bg-surface-brand px-1.5 py-0.5 text-[0.625rem] font-semibold tracking-wide text-ink-on-brand uppercase"
             style={{ left: `${geo.cutoffX}%` }}
           >
             Now
@@ -157,7 +160,7 @@ export function ForecastChart({
             </span>
           ))}
 
-          {interactive && <ChartHoverLayer points={geo.points} unit={series.unit} />}
+          {geo.hover && <ChartHoverLayer data={geo.hover} unit={series.unit} />}
         </div>
       </div>
 

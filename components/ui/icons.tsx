@@ -26,11 +26,14 @@ import {
   Info as LuInfo,
   Layers as LuLayers,
   LogOut as LuLogOut,
+  Moon as LuMoon,
   Minus as LuMinus,
   OctagonAlert as LuOctagonAlert,
   Plus as LuPlus,
   Search as LuSearch,
+  Settings as LuSettings,
   ShieldCheck as LuShieldCheck,
+  Sun as LuSun,
   TriangleAlert as LuTriangleAlert,
   Upload as LuUpload,
   X as LuX,
@@ -73,3 +76,6 @@ export const Shield = withDefaults(LuShieldCheck);
 export const Database = withDefaults(LuDatabase);
 export const Plus = withDefaults(LuPlus);
 export const LogOut = withDefaults(LuLogOut);
+export const Sun = withDefaults(LuSun);
+export const Moon = withDefaults(LuMoon);
+export const Settings = withDefaults(LuSettings);

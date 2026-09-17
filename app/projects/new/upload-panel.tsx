@@ -96,7 +96,7 @@ export function UploadPanel({ targetProjectId }: { targetProjectId: string }) {
 
       {file && (
         <div className="mt-4 flex items-center gap-3 rounded-sm border border-border-subtle bg-surface-card px-4 py-3">
-          <FileText size={18} className="shrink-0 text-brand-blue" />
+          <FileText size={18} className="shrink-0 text-brand-blue-ink" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-body-sm font-semibold text-ink">{file.name}</p>
             <p className="text-meta text-ink-tertiary" data-numeric>
