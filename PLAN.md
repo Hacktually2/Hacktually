@@ -66,7 +66,13 @@ outputs = list(
 
 Two consequences worth acting on. The quantiles give us the `lower` and `upper` columns in our schema for free, so nobody should write interval logic. And `predict_batch` means batching is the supported path: never call this per series in a Python loop, or the demo stalls on stage.
 
-### The licence answer
+### The licence answer — superseded, see below
+
+**Update:** we added [TiRex-2](https://github.com/NX-AI/tirex-2) (NX-AI), which is **Apache-2.0** and supports past and future-known covariates. That is a materially better answer than falling back to TimesFM-2.5, because it means the production engine is commercially deployable *today* and the calendar covariate still works on it.
+
+Positioning: **TiRex-2 is the production engine, TimesFM-3 is the benchmark.** Install with `pip install tirex-2` on the GPU box; the adapter is at `backend/app/forecasting/tirex_model.py` and it drops itself from the router if the package is absent.
+
+The older answer, kept because it is still true and a judge may ask about TimesFM specifically:
 
 Weights up to version 2.5 are Apache-2.0. So when a judge asks whether this can be sold:
 
@@ -339,7 +345,7 @@ It sometimes will, which is why mapping is inferred automatically but confirmed 
 
 **Can this be sold commercially given the model licence?**
 
-The prototype runs TimesFM-3 under its research licence. Our forecasting layer is an adapter, so production swaps to TimesFM-2.5 under Apache-2.0 or a commercially licensed model without touching ingestion, validation or decisions. We designed for that from the start.
+Yes, and we did not leave that to chance. Our production engine is TiRex-2, which is Apache-2.0 and takes the same past and future-known covariates our Indonesian calendar needs. TimesFM-3 runs alongside it as a benchmark, and its weights are research-only, which is exactly why we never made it the dependency. Both sit behind one adapter interface and the backtest picks per series — so "model-agnostic" is something you can see in the model mix, not a claim in a slide.
 
 **Why mid-market rather than your enterprise accounts?**
 

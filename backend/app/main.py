@@ -13,8 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes import router
 from .db import database as db
-from .forecasting.router import available_model_names
-from .forecasting.timesfm_model import TimesFMModel
+from .forecasting.router import available_model_names, foundation_status
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -23,12 +22,14 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
-    # Load TimesFM once at startup, never per request. Failure is survivable.
-    model = TimesFMModel.instance()
-    if model.available:
-        log.info("TimesFM ready")
-    else:
-        log.warning("Running on baselines only: %s", model.error)
+    # Load foundation models once at startup, never per request. Failure is
+    # survivable: the router drops whatever did not load and the pipeline still
+    # runs end to end on baselines plus the calendar wrapper.
+    for name, status in foundation_status().items():
+        if status["available"]:
+            log.info("%s ready (%s)", name, status["licence"])
+        else:
+            log.warning("%s unavailable: %s", name, status["error"])
     yield
 
 
@@ -52,9 +53,8 @@ app.include_router(router)
 
 @app.get("/health")
 def health():
-    timesfm = TimesFMModel.instance()
     return {
         "status": "ok",
         "models_available": available_model_names(),
-        "timesfm": {"available": timesfm.available, "error": timesfm.error or None},
+        "foundation_models": foundation_status(),
     }
