@@ -4,10 +4,13 @@ Demand class decides which models may COMPETE. Backtesting decides which wins.
 That distinction is the difference between "TimesFM is SOTA so we use it" and
 "the company's own data chose the method".
 
-Two foundation models sit behind the same interface. TiRex-2 is the production
-engine because it is Apache 2.0 and can actually be deployed commercially;
-TimesFM-3 runs alongside it as a benchmark, since its weights are restricted to
-non-commercial use. Either may be absent at runtime and the router just drops it.
+Both foundation models run on the remote GPU service. That service takes no
+covariates, so each one also competes in a `+calendar` form: the same remote
+forecast with the Indonesian Lebaran uplift applied on top. Whether the calendar
+correction actually helps is then decided by backtest per series, not assumed.
+
+TiRex-2 is the production engine because it is Apache-2.0 and can ship;
+TimesFM-3's weights are research-only, so it runs as a benchmark.
 """
 
 from __future__ import annotations
@@ -16,15 +19,11 @@ from ..canonical import DemandClass
 from .base import ForecastModel
 from .baselines import CrostonModel, MovingAverageModel, SeasonalNaiveModel, TSBModel
 from .calendar_adjusted import CalendarAdjustedModel
-from .timesfm_model import TimesFMModel
-from .tirex_model import TiRexModel
+from .remote_model import timesfm, tirex
 
-# Loaded lazily as singletons, and skipped entirely when the package or
-# checkpoint is missing. Never construct these per request.
-FOUNDATION_MODELS: dict[str, type] = {
-    "tirex": TiRexModel,
-    "timesfm": TimesFMModel,
-}
+# Names whose availability depends on the GPU service being reachable.
+FOUNDATION_BASE = ("tirex", "timesfm")
+FOUNDATION_NAMES = FOUNDATION_BASE + tuple(f"{n}+calendar" for n in FOUNDATION_BASE)
 
 # moving_average competes everywhere on purpose. It is the customer's current
 # practice, and a backtest that excludes the incumbent is not a backtest — we
@@ -38,18 +37,26 @@ CANDIDATES: dict[DemandClass, tuple[str, ...]] = {
     # correction never gets picked. Wrapping the model that already captures the
     # week is what lets both effects show up at once.
     DemandClass.SMOOTH: (
-        "tirex", "timesfm", "seasonal_naive", "moving_average",
+        "tirex", "tirex+calendar", "timesfm", "timesfm+calendar",
+        "seasonal_naive", "moving_average",
         "moving_average+calendar", "seasonal_naive+calendar",
     ),
     DemandClass.ERRATIC: (
-        "tirex", "timesfm", "seasonal_naive", "moving_average",
+        "tirex", "tirex+calendar", "timesfm", "timesfm+calendar",
+        "seasonal_naive", "moving_average",
         "moving_average+calendar", "seasonal_naive+calendar",
     ),
-    DemandClass.INTERMITTENT: ("tirex", "timesfm", "tsb", "croston", "moving_average"),
-    DemandClass.LUMPY: ("tirex", "timesfm", "croston", "tsb", "moving_average"),
+    DemandClass.INTERMITTENT: (
+        "tirex", "tirex+calendar", "timesfm",
+        "tsb", "croston", "moving_average",
+    ),
+    DemandClass.LUMPY: (
+        "tirex", "tirex+calendar", "timesfm",
+        "croston", "tsb", "moving_average",
+    ),
 }
 
-_REGISTRY: dict[str, ForecastModel] = {
+_LOCAL: dict[str, ForecastModel] = {
     "seasonal_naive": SeasonalNaiveModel(),
     "moving_average": MovingAverageModel(),
     "croston": CrostonModel(),
@@ -63,11 +70,28 @@ _REGISTRY: dict[str, ForecastModel] = {
 
 BASELINE_FOR_VALUE_SIM = "moving_average"
 
+_remote_cache: dict[str, ForecastModel] = {}
+
+
+def _remote(name: str) -> ForecastModel:
+    """Foundation models are singletons; the +calendar form wraps the same one."""
+    if name not in _remote_cache:
+        base = timesfm() if name.startswith("timesfm") else tirex()
+        _remote_cache[name] = (
+            CalendarAdjustedModel(base) if name.endswith("+calendar") else base
+        )
+    return _remote_cache[name]
+
 
 def get_model(name: str) -> ForecastModel:
-    if name in FOUNDATION_MODELS:
-        return FOUNDATION_MODELS[name].instance()
-    return _REGISTRY[name]
+    if name in FOUNDATION_NAMES:
+        return _remote(name)
+    return _LOCAL[name]
+
+
+def _foundation_available(name: str) -> bool:
+    base = timesfm() if name.startswith("timesfm") else tirex()
+    return base.available
 
 
 def candidates_for(
@@ -76,34 +100,30 @@ def candidates_for(
     """Models allowed to compete for this demand class, minus anything unavailable."""
     models: list[ForecastModel] = []
     for name in CANDIDATES[demand_class]:
-        if name in FOUNDATION_MODELS:
-            if not include_foundation:
+        if name in FOUNDATION_NAMES:
+            if not include_foundation or not _foundation_available(name):
                 continue
-            model = FOUNDATION_MODELS[name].instance()
-            if not model.available:
-                continue
-            models.append(model)
+            models.append(_remote(name))
         else:
-            models.append(_REGISTRY[name])
+            models.append(_LOCAL[name])
     return models
 
 
 def available_model_names() -> list[str]:
-    names = list(_REGISTRY)
-    for name, cls in FOUNDATION_MODELS.items():
-        if cls.instance().available:
-            names.append(name)
+    names = list(_LOCAL)
+    names += [n for n in FOUNDATION_NAMES if _foundation_available(n)]
     return names
 
 
 def foundation_status() -> dict[str, dict]:
     """Surfaced on /health so the team knows which engines actually loaded."""
     status = {}
-    for name, cls in FOUNDATION_MODELS.items():
-        model = cls.instance()
+    for name in FOUNDATION_BASE:
+        model = timesfm() if name == "timesfm" else tirex()
         status[name] = {
             "available": model.available,
             "error": model.error or None,
-            "licence": "Apache-2.0" if name == "tirex" else "non-commercial weights",
+            "licence": model.licence,
+            "role": "production engine" if name == "tirex" else "benchmark",
         }
     return status

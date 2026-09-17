@@ -22,6 +22,11 @@ from ..canonical import (
     build_series_id,
 )
 
+# Carried on each canonical frame to record which upload it came from, so a
+# later upload of the same period supersedes an earlier one instead of adding
+# to it. Higher is newer. Dropped before aggregation.
+SOURCE_RANK_COL = "__source_rank"
+
 DATE_FORMATS = (
     "%Y-%m-%d",
     "%d/%m/%Y",
@@ -48,6 +53,7 @@ class CleaningReport:
         self.reindexed_gaps = 0
         self.frequency: str = "daily"
         self.series_total = 0
+        self.superseded_rows = 0
         self.notes: list[str] = []
 
     def as_dict(self) -> dict:
@@ -62,6 +68,7 @@ class CleaningReport:
             "reindexed_gaps": self.reindexed_gaps,
             "frequency": self.frequency,
             "series_total": self.series_total,
+            "superseded_rows": self.superseded_rows,
             "notes": self.notes,
         }
 
@@ -198,6 +205,34 @@ def clean(
     df = df.with_columns(
         pl.col(TIMESTAMP).dt.truncate(frequency.polars_every).alias(TIMESTAMP)
     )
+
+    # Two different kinds of duplicate, and they need opposite rules.
+    #
+    # Several rows for the same series and period INSIDE one file are separate
+    # transactions — three sales on one day — and must be summed.
+    #
+    # The same series and period reported by TWO files is one fact told twice:
+    # the owner's initial load and a branch manager's later update both contain
+    # last week for Jakarta. Summing those doubles demand for exactly the period
+    # someone just corrected. Measured before this fix: a manager re-uploading
+    # thirty days added 21,019 phantom units to one branch. The latest upload
+    # wins, and within that upload the transactions are summed as normal.
+    if SOURCE_RANK_COL in df.columns:
+        before_supersede = df.height
+        latest = (
+            df.group_by([SERIES_ID, TIMESTAMP])
+            .agg(pl.col(SOURCE_RANK_COL).max().alias("__latest"))
+        )
+        df = (
+            df.join(latest, on=[SERIES_ID, TIMESTAMP], how="left")
+            .filter(pl.col(SOURCE_RANK_COL) == pl.col("__latest"))
+            .drop(["__latest", SOURCE_RANK_COL])
+        )
+        report.superseded_rows = before_supersede - df.height
+        if report.superseded_rows:
+            report.notes.append(
+                f"{report.superseded_rows} rows replaced by a newer upload of the same period"
+            )
 
     # Transform 1: aggregate duplicate (timestamp, series_id) rows.
     before = df.height

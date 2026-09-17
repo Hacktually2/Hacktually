@@ -1,0 +1,15 @@
+{
+  "generated_utc": "2026-09-17T10:46:32.034289Z",
+  "seed": 42,
+  "files": {
+    "01_indonesia_fmcg_distributor_synthetic.csv": 432000,
+    "02_indonesia_retail_chain_synthetic.csv": 456250,
+    "03_indonesia_manufacturing_weekly_synthetic.csv": 24960,
+    "03b_manufacturing_bom_synthetic.csv": 360,
+    "04_indonesia_spare_parts_intermittent_synthetic.csv": 115200,
+    "schema_challenge/manufacturer_export.csv": 2000,
+    "schema_challenge/legacy_erp_export.csv": 2000,
+    "schema_challenge/retail_ops_export.csv": 2000,
+    "ground_truth/distributor_series_labels.csv": 800
+  }
+}

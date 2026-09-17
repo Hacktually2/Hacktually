@@ -14,12 +14,15 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..canonical import ALL_FIELDS as ALL_CANONICAL
 from ..canonical import (
     BusinessParams,
+    CATEGORY,
     DecisionMode,
     DemandClass,
     Frequency,
     INVENTORY,
+    LOCATION_ID,
     SERIES_ID,
     SchemaMapping,
     TARGET,
@@ -27,23 +30,31 @@ from ..canonical import (
     split_series_id,
 )
 from ..cleaning import health as health_mod
-from ..cleaning.pipeline import canonicalize, clean
+from ..cleaning.pipeline import SOURCE_RANK_COL, CleaningReport, canonicalize, clean
 from ..db import database as db
 from ..decision import reorder as reorder_mod
+from ..decision import hierarchy as hierarchy_mod
+from ..decision import params as params_mod
 from ..decision import value_sim
 from ..demand.classifier import portfolio_summary, profile_series
 from ..enrich import calendar as calendar_mod
 from ..enrich import censoring
-from ..evaluation.backtest import evaluate_series, segment_defaults, select_model
+from ..evaluation.backtest import evaluate_batched, segment_defaults, select_model
 from ..forecasting.baselines import MovingAverageModel
 from ..forecasting.router import candidates_for
+from ..schema import reshape as reshape_mod
 from ..schema.mapper import build_mapping
 from ..schema.profiler import profile_dataframe
 
 log = logging.getLogger(__name__)
 
 DEFAULT_HORIZON = 30
-MAX_SERIES_FOR_VALUE_SIM = 60
+MAX_SERIES_FOR_VALUE_SIM = 30
+
+# Replenishment is reviewed on a cycle, not every day. Weekly matches how
+# mid-market buyers actually place orders, and it is what keeps the value
+# simulation to a few hundred GPU calls instead of tens of thousands.
+REVIEW_PERIOD = 7
 
 
 def _now() -> str:
@@ -63,18 +74,93 @@ def read_any(path: Path) -> pl.DataFrame:
     )
 
 
+def read_reshaped(path: Path) -> tuple[pl.DataFrame, dict | None]:
+    """Read, then unpivot if the file runs time sideways.
+
+    Done here rather than later so the profiler and mapper only ever see long
+    format. A wide file has no timestamp column and no target column to find, so
+    without this the mapper correctly refuses a perfectly good dataset.
+    """
+    df = read_any(path)
+    df, info = reshape_mod.reshape(df)
+    return df, info.as_dict() if info else None
+
+
 # ---------------------------------------------------------------- ingestion
 
-def ingest(filename: str, raw_bytes: bytes) -> dict:
-    dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
+def _store_source(
+    dataset_id: str, filename: str, raw_bytes: bytes, branch_label: str | None
+) -> dict:
+    """Persist one uploaded file and profile it on its own terms.
+
+    Each source gets its OWN mapping. That is the point of multi-branch upload:
+    the Jakarta branch may export from Accurate and Surabaya from Jubelio, and
+    neither should have to change anything for the other.
+    """
+    source_id = f"src_{uuid.uuid4().hex[:10]}"
     db.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     suffix = Path(filename).suffix or ".csv"
-    raw_path = db.UPLOAD_DIR / f"{dataset_id}{suffix}"
+    raw_path = db.UPLOAD_DIR / f"{source_id}{suffix}"
     raw_path.write_bytes(raw_bytes)
 
-    df = read_any(raw_path)
-    profiles = profile_dataframe(df)
-    mapping = build_mapping(df.columns, profiles)
+    df, wide_info = read_reshaped(raw_path)
+    mapping = build_mapping(df.columns, profile_dataframe(df))
+
+    # Reshaping created the timestamp and target columns, so they are known
+    # facts rather than inferences — overwrite whatever the rules guessed.
+    if wide_info:
+        forced = reshape_mod.forced_mapping()
+        for field in mapping.fields:
+            if field.canonical in forced:
+                field.source_column = forced[field.canonical]
+                field.confidence = 0.99
+                field.reason = (
+                    f"created by unpivoting {wide_info['date_columns']} date columns"
+                )
+
+    # Which locations this file covers, so a re-upload replaces rather than doubles.
+    locations: list[str] = []
+    location_column = mapping.get(LOCATION_ID)
+    if location_column and location_column in df.columns:
+        locations = [
+            str(v)
+            for v in df.get_column(location_column).drop_nulls().unique().to_list()
+        ][:200]
+
+    db.execute(
+        """INSERT INTO dataset_sources
+           (source_id, dataset_id, filename, raw_path, branch_label, schema_mapping,
+            preset_matched, rows_received, locations, uploaded_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            source_id,
+            dataset_id,
+            filename,
+            str(raw_path),
+            branch_label,
+            db.to_json(mapping.model_dump()),
+            mapping.preset_matched,
+            df.height,
+            db.to_json(locations),
+            _now(),
+        ),
+    )
+
+    return {
+        "source_id": source_id,
+        "rows": df.height,
+        "columns": df.columns,
+        "locations": locations,
+        "wide_format": wide_info,
+        "preset_matched": mapping.preset_matched,
+        "mapping": mapping.model_dump(),
+        "raw_path": str(raw_path),
+    }
+
+
+def ingest(filename: str, raw_bytes: bytes, branch_label: str | None = None) -> dict:
+    dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
+    source = _store_source(dataset_id, filename, raw_bytes, branch_label)
 
     db.execute(
         """INSERT INTO datasets
@@ -84,20 +170,80 @@ def ingest(filename: str, raw_bytes: bytes) -> dict:
             dataset_id,
             filename,
             _now(),
-            str(raw_path),
-            db.to_json(mapping.model_dump()),
-            mapping.preset_matched,
+            source["raw_path"],
+            db.to_json(source["mapping"]),
+            source["preset_matched"],
         ),
     )
 
     return {
         "dataset_id": dataset_id,
+        "source_id": source["source_id"],
         "status": "awaiting_mapping",
-        "rows": df.height,
-        "columns": df.columns,
-        "preset_matched": mapping.preset_matched,
-        "mapping": mapping.model_dump(),
+        "rows": source["rows"],
+        "columns": source["columns"],
+        "locations": source["locations"],
+        "preset_matched": source["preset_matched"],
+        "mapping": source["mapping"],
+        "wide_format": source.get("wide_format"),
     }
+
+
+def append_source(
+    dataset_id: str, filename: str, raw_bytes: bytes, branch_label: str | None = None
+) -> dict:
+    """Add another branch's file to an existing dataset.
+
+    Re-uploading the same branch replaces its previous file rather than adding to
+    it — otherwise a manager correcting last week's export would silently double
+    that branch's demand, and nothing downstream would notice.
+    """
+    if not db.query_one("SELECT 1 FROM datasets WHERE dataset_id = ?", (dataset_id,)):
+        raise KeyError(dataset_id)
+
+    source = _store_source(dataset_id, filename, raw_bytes, branch_label)
+    incoming = set(source["locations"])
+
+    replaced: list[str] = []
+    if incoming:
+        for row in db.query(
+            "SELECT source_id, locations FROM dataset_sources WHERE dataset_id = ? AND source_id != ?",
+            (dataset_id, source["source_id"]),
+        ):
+            existing = set(db.from_json(row["locations"], []) or [])
+            if existing and existing <= incoming:
+                db.execute(
+                    "DELETE FROM dataset_sources WHERE source_id = ?", (row["source_id"],)
+                )
+                replaced.append(row["source_id"])
+
+    sources = list_sources(dataset_id)
+    return {
+        "dataset_id": dataset_id,
+        "source_id": source["source_id"],
+        "rows": source["rows"],
+        "locations": source["locations"],
+        "preset_matched": source["preset_matched"],
+        "mapping": source["mapping"],
+        "replaced_sources": replaced,
+        "sources_total": len(sources),
+        "status": "awaiting_mapping" if source["mapping"] else "ready",
+    }
+
+
+def list_sources(dataset_id: str) -> list[dict]:
+    rows = db.query(
+        """SELECT source_id, filename, branch_label, preset_matched, rows_received,
+                  locations, mapping_confirmed, uploaded_at
+           FROM dataset_sources WHERE dataset_id = ? ORDER BY uploaded_at""",
+        (dataset_id,),
+    )
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["locations"] = db.from_json(item["locations"], []) or []
+        out.append(item)
+    return out
 
 
 def ingest_records(source: str, records: list[dict]) -> dict:
@@ -123,58 +269,318 @@ def get_mapping(dataset_id: str) -> dict:
     }
 
 
-def confirm_mapping(dataset_id: str, overrides: dict[str, str] | None = None) -> dict:
-    row = db.query_one("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
-    if not row:
+def read_columns(path: Path) -> list[str]:
+    """Column names as the mapper sees them, without reading the whole file.
+
+    Reshaped files report their long-form columns (__period__, __value__), since
+    those are what a mapping refers to.
+    """
+    try:
+        if path.suffix.lower() in (".json", ".ndjson"):
+            return list(pl.read_json(path).columns)
+        head = pl.read_csv(
+            path, n_rows=5, infer_schema_length=5, ignore_errors=True,
+            truncate_ragged_lines=True,
+        )
+        head, _ = reshape_mod.reshape(head)
+        return list(head.columns)
+    except Exception:  # noqa: BLE001 — fall back to whatever the mapping already knows
+        return []
+
+
+IGNORE = "ignore"
+
+
+def _normalise_overrides(
+    overrides: dict[str, str] | None, columns: list[str]
+) -> tuple[dict[str, str], set[str]]:
+    """Accept overrides in either direction; return (canonical -> column, columns to unmap).
+
+    The frontend contract sends { source_column: canonical_key } — each review row
+    is a column with a dropdown of fields, and "ignore" drops it. Internal callers
+    and the MCP tool send { canonical: source_column }.
+
+    Before this, the API only understood the internal direction, so every
+    correction made in the review screen was silently discarded: no error, the
+    mapping simply never changed.
+
+    Direction cannot be inferred from names alone — in the WFP file `price` is both
+    a column and a canonical field. So it is decided against the columns that
+    actually exist in the file: in the contract direction the KEYS are columns, in
+    the internal direction the VALUES are.
+    """
+    if not overrides:
+        return {}, set()
+
+    known = set(columns)
+    canonical_names = set(ALL_CANONICAL) | {IGNORE}
+
+    keys_are_columns = all(k in known for k in overrides)
+    values_are_columns = all((not v) or v in known for v in overrides.values())
+    values_are_fields = all((v or IGNORE) in canonical_names for v in overrides.values())
+
+    # Contract direction wins a genuine tie: it is the documented API.
+    if keys_are_columns and values_are_fields:
+        by_canonical: dict[str, str] = {}
+        drop: set[str] = set()
+        for column, canonical in overrides.items():
+            if not canonical or canonical == IGNORE:
+                drop.add(column)
+            else:
+                by_canonical[canonical] = column
+        return by_canonical, drop
+
+    if values_are_columns:
+        return {k: v for k, v in overrides.items() if v}, {
+            k for k, v in overrides.items() if not v
+        }
+
+    unknown = sorted(k for k in overrides if k not in known and k not in canonical_names)
+    raise ValueError(
+        "could not read overrides: expected { source_column: canonical_key }"
+        + (f"; unknown columns {unknown}" if unknown else "")
+    )
+
+
+def _apply_overrides(
+    mapping: SchemaMapping,
+    overrides: dict[str, str] | None,
+    columns: list[str] | None = None,
+) -> SchemaMapping:
+    """Apply user corrections, keeping one column per field and one field per column."""
+    if not overrides:
+        return mapping
+
+    by_canonical, drop_columns = _normalise_overrides(overrides, columns or [])
+    reassigned = set(by_canonical.values())
+
+    fields = {f.canonical: f for f in mapping.fields}
+    for field in mapping.fields:
+        # A column the user dropped, or moved to a different field, leaves its
+        # old role. Otherwise one column would feed two fields.
+        if field.source_column and (
+            field.source_column in drop_columns
+            or (field.source_column in reassigned and by_canonical.get(field.canonical) != field.source_column)
+        ):
+            field.source_column = None
+            field.confidence = 0.0
+            field.reason = "removed by user"
+
+    for canonical, column in by_canonical.items():
+        target = fields.get(canonical)
+        if target is None:
+            continue
+        target.source_column = column
+        target.confidence = 1.0
+        target.reason = "confirmed by user"
+    return mapping
+
+
+def confirm_mapping(
+    dataset_id: str,
+    overrides: dict[str, str] | None = None,
+    source_id: str | None = None,
+) -> dict:
+    """Confirm one branch's mapping, or every branch's when source_id is omitted.
+
+    Overrides are per source, because a correction that makes sense for Jakarta's
+    Accurate export is meaningless for Surabaya's Jubelio one — the column does
+    not even exist there. So an override is only applied to a source that
+    actually has that column.
+    """
+    if not db.query_one("SELECT 1 FROM datasets WHERE dataset_id = ?", (dataset_id,)):
         raise KeyError(dataset_id)
 
-    mapping = SchemaMapping(**db.from_json(row["schema_mapping"], {"fields": []}))
-    if overrides:
-        for field in mapping.fields:
-            if field.canonical in overrides:
-                field.source_column = overrides[field.canonical] or None
-                field.confidence = 1.0
-                field.reason = "confirmed by user"
-
-    missing = mapping.missing_required()
-    if missing:
-        raise ValueError(f"still missing required fields: {', '.join(missing)}")
-
-    mapping.confirmed = True
-    db.execute(
-        "UPDATE datasets SET schema_mapping = ?, mapping_confirmed = 1 WHERE dataset_id = ?",
-        (db.to_json(mapping.model_dump()), dataset_id),
+    sources = db.query(
+        "SELECT * FROM dataset_sources WHERE dataset_id = ?"
+        + (" AND source_id = ?" if source_id else ""),
+        (dataset_id, source_id) if source_id else (dataset_id,),
     )
-    return {"dataset_id": dataset_id, "confirmed": True, "mapping": mapping.model_dump()}
+    if not sources:
+        raise KeyError(source_id or dataset_id)
+
+    # Validate every override against the columns that actually exist, before
+    # anything is written. The per-source filter below exists so a correction
+    # for one branch's export is not applied to another branch's file — but on
+    # its own it also swallowed genuinely wrong input, so a typo in a column name
+    # confirmed successfully and changed nothing. An override that matches no
+    # source at all is refused outright, and refused before any source is saved,
+    # so a bad request cannot leave the dataset half-confirmed.
+    if overrides:
+        columns_by_source = {
+            source["source_id"]: set(read_columns(Path(source["raw_path"])))
+            for source in sources
+        }
+        every_column = set().union(*columns_by_source.values()) if columns_by_source else set()
+        canonical_names = set(ALL_CANONICAL) | {IGNORE}
+        unmatched = [
+            key for key, value in overrides.items()
+            if key not in every_column
+            and not (key in canonical_names and value and value in every_column)
+        ]
+        if unmatched:
+            raise ValueError(
+                "override refers to columns not present in any uploaded file: "
+                + ", ".join(sorted(unmatched))
+            )
+
+    confirmed: list[dict] = []
+    problems: list[dict] = []
+
+    for source in sources:
+        mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
+        file_columns = read_columns(Path(source["raw_path"]))
+        # An override only applies to a source that actually has the column. A
+        # correction for Jakarta's Accurate export means nothing to Surabaya's
+        # Jubelio file, where that column does not exist.
+        relevant = None
+        if overrides:
+            present = set(file_columns)
+            relevant = {
+                k: v for k, v in overrides.items()
+                if k in present or (v and v in present) or source_id
+            } or None
+        try:
+            mapping = _apply_overrides(mapping, relevant, file_columns)
+        except ValueError as exc:
+            problems.append({
+                "source_id": source["source_id"],
+                "filename": source["filename"],
+                "missing": [str(exc)],
+            })
+            continue
+
+        missing = mapping.missing_required()
+        if missing:
+            problems.append(
+                {
+                    "source_id": source["source_id"],
+                    "filename": source["filename"],
+                    "missing": missing,
+                }
+            )
+            continue
+
+        mapping.confirmed = True
+        db.execute(
+            "UPDATE dataset_sources SET schema_mapping = ?, mapping_confirmed = 1 WHERE source_id = ?",
+            (db.to_json(mapping.model_dump()), source["source_id"]),
+        )
+        confirmed.append(
+            {"source_id": source["source_id"], "filename": source["filename"]}
+        )
+        # Keep the dataset row in step for anything still reading it.
+        db.execute(
+            "UPDATE datasets SET schema_mapping = ?, mapping_confirmed = 1 WHERE dataset_id = ?",
+            (db.to_json(mapping.model_dump()), dataset_id),
+        )
+
+    if not confirmed:
+        detail = "; ".join(
+            f"{p['filename']} missing {', '.join(p['missing'])}" for p in problems
+        )
+        raise ValueError(f"no source could be confirmed: {detail}")
+
+    return {
+        "dataset_id": dataset_id,
+        "confirmed": confirmed,
+        "needs_attention": problems,
+        "mapping": SchemaMapping(
+            **db.from_json(
+                db.query_one(
+                    "SELECT schema_mapping FROM datasets WHERE dataset_id = ?",
+                    (dataset_id,),
+                )["schema_mapping"],
+                {"fields": []},
+            )
+        ).model_dump(),
+    }
 
 
 # ---------------------------------------------------------------- preparation
 
-def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict]:
+def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, CleaningReport]:
+    """Union every source, each canonicalized with its own mapping, then clean once.
+
+    Cleaning has to happen after the union, not per source: frequency detection
+    and duplicate aggregation only make sense across the whole picture.
+    """
     row = db.query_one("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
     if not row:
         raise KeyError(dataset_id)
 
-    mapping = SchemaMapping(**db.from_json(row["schema_mapping"], {"fields": []}))
-    df = read_any(Path(row["raw_path"]))
+    sources = db.query(
+        "SELECT * FROM dataset_sources WHERE dataset_id = ? ORDER BY uploaded_at",
+        (dataset_id,),
+    )
+    if not sources:
+        # Pre-multi-source dataset. Fall back to the single file on the row.
+        sources = [row]
 
-    canonical, report = canonicalize(df, mapping)
+    frames: list[pl.DataFrame] = []
+    rows_received = 0
+    # Sources arrive ordered by upload time, so the loop index is the rank a
+    # later upload uses to supersede an earlier one for overlapping periods.
+    for rank, source in enumerate(sources):
+        mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
+        if mapping.missing_required():
+            continue
+        source_df, _ = read_reshaped(Path(source["raw_path"]))
+        frame, partial = canonicalize(source_df, mapping)
+        rows_received += partial.rows_received
+        if frame.height:
+            frames.append(frame.with_columns(pl.lit(rank).alias(SOURCE_RANK_COL)))
+
+    if not frames:
+        raise ValueError("no source in this dataset has a usable mapping yet")
+
+    canonical = frames[0] if len(frames) == 1 else pl.concat(frames, how="diagonal")
+
+    report = CleaningReport()
+    report.rows_received = rows_received
     canonical, report = clean(canonical, report)
     frequency = Frequency(report.frequency)
 
     health = health_mod.build_report(canonical, report, frequency)
-    return canonical, frequency, health
+    return canonical, frequency, health, report
 
 
 def prepare(dataset_id: str) -> dict:
     """Canonicalize, clean, profile and score. Idempotent."""
-    canonical, frequency, health = _load_canonical(dataset_id)
+    canonical, frequency, health, cleaning_report = _load_canonical(dataset_id)
 
     canonical, censored_counts = censoring.detect(canonical)
     profiles = profile_series(canonical, censored_counts)
 
+    # Re-run the health assessment now that ADI exists. Lifecycle needs each
+    # series' own demand interval to tell a slow mover from a dead one, and ADI
+    # is only known after profiling — so the first pass was the cheap version.
+    adi_by_series = {sid: prof.adi for sid, prof in profiles.items()}
+    health = health_mod.build_report(
+        canonical, cleaning_report, frequency, adi_by_series
+    )
+
     forecastable = set(health["forecastable_ids"])
     excluded = {e["series_id"]: e["reason"] for e in health.get("series_excluded", [])}
+
+    # Category comes from the data and drives parameter defaults, so it has to
+    # be stored per series rather than recomputed at decision time.
+    category_by_series: dict[str, str] = {}
+    if CATEGORY in canonical.columns:
+        for row in (
+            canonical.group_by(SERIES_ID)
+            .agg(pl.col(CATEGORY).drop_nulls().first().alias("cat"))
+            .iter_rows(named=True)
+        ):
+            if row["cat"] is not None:
+                category_by_series[row[SERIES_ID]] = str(row["cat"])
+
+    avg_by_series: dict[str, float] = {
+        r[SERIES_ID]: float(r["m"] or 0.0)
+        for r in canonical.group_by(SERIES_ID)
+        .agg(pl.col(TARGET).mean().alias("m"))
+        .iter_rows(named=True)
+    }
 
     rows = []
     for series_id, profile in profiles.items():
@@ -193,6 +599,8 @@ def prepare(dataset_id: str) -> dict:
                 profile.censored_periods,
                 1 if series_id in forecastable else 0,
                 excluded.get(series_id),
+                category_by_series.get(series_id),
+                avg_by_series.get(series_id),
             )
         )
 
@@ -200,8 +608,9 @@ def prepare(dataset_id: str) -> dict:
     db.execute_many(
         """INSERT INTO series_profiles
            (dataset_id, series_id, item_id, location_id, adi, cv2, demand_class,
-            n_obs, n_nonzero, censored_periods, forecastable, exclusion_reason)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            n_obs, n_nonzero, censored_periods, forecastable, exclusion_reason,
+            category, avg_demand)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
 
@@ -271,7 +680,7 @@ def run_forecast(
             )
 
     progress(5, "preparing data")
-    canonical, frequency, _ = _load_canonical(dataset_id)
+    canonical, frequency, _, _ = _load_canonical(dataset_id)
     canonical, censored_counts = censoring.detect(canonical)
 
     profile_rows = db.query(
@@ -301,21 +710,16 @@ def run_forecast(
     seasonal_period = frequency.seasonal_period
 
     progress(20, "backtesting candidate models")
-    evaluations = []
-    for series_id in series_ids:
-        profile = profiles[series_id]
-        models = candidates_for(profile.demand_class)
-        evaluations.append(
-            evaluate_series(
-                series_id,
-                histories[series_id],
-                profile,
-                models,
-                horizon=min(horizon, max(7, len(histories[series_id]) // 4)),
-                seasonal_period=seasonal_period,
-                covariates=covariates.get(series_id),
-            )
-        )
+    evaluations = evaluate_batched(
+        series_ids,
+        histories,
+        profiles,
+        candidates_for,
+        seasonal_period=seasonal_period,
+        horizon_for=lambda values: min(horizon, max(7, len(values) // 4)),
+        covariates=covariates,
+        progress=lambda fraction: progress(20 + int(fraction * 30), "backtesting"),
+    )
 
     defaults = segment_defaults(evaluations)
 
@@ -440,6 +844,21 @@ def run_forecast(
     progress(80, "building recommendations")
     build_recommendations(dataset_id, canonical, final_forecasts, frequency, error_std=error_std)
 
+    # Roll branch-level forecasts up to network level. Bottom-up, so the branch
+    # numbers and the network total can never disagree.
+    recommendations_by_series = {
+        r["series_id"]: r for r in get_recommendations(dataset_id, limit=100_000)
+    }
+    hierarchy = hierarchy_mod.build(final_forecasts, recommendations_by_series)
+    hierarchy["coherence"] = hierarchy_mod.coherence_check(
+        hierarchy["network"]["horizon_total"],
+        [b["horizon_total"] for b in hierarchy["branches"]],
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO hierarchy (dataset_id, result) VALUES (?, ?)",
+        (dataset_id, db.to_json(hierarchy)),
+    )
+
     progress(90, "simulating business value")
     try:
         run_value_simulation(dataset_id, canonical, histories, frequency, seasonal_period)
@@ -470,7 +889,20 @@ def _timedelta(days: int):
 # ---------------------------------------------------------------- decisions
 
 def _params_for(dataset_id: str) -> BusinessParams:
-    return BusinessParams()
+    """Dataset-level parameters, for callers that do not resolve per series."""
+    resolved, _ = params_mod.resolve(dataset_id)
+    return resolved
+
+
+def _series_categories(dataset_id: str) -> dict[str, str]:
+    return {
+        r["series_id"]: r["category"]
+        for r in db.query(
+            "SELECT series_id, category FROM series_profiles WHERE dataset_id = ?",
+            (dataset_id,),
+        )
+        if r["category"]
+    }
 
 
 def build_recommendations(
@@ -498,17 +930,36 @@ def build_recommendations(
             r[SERIES_ID]: r["inv"] for r in latest.iter_rows(named=True) if r["inv"] is not None
         }
 
+    # Resolve parameters per series: series override, else category, else the
+    # dataset default. Loaded once — resolving per series would re-read the table
+    # 400 times for no reason.
+    param_store = params_mod.load_all(dataset_id)
+    categories = _series_categories(dataset_id)
+
     rows = []
     for series_id, point in forecasts.items():
+        series_params, assumed = params_mod.resolve(
+            dataset_id,
+            series_id=series_id,
+            category=categories.get(series_id),
+            cached=param_store,
+        )
         recommendation = reorder_mod.recommend(
             series_id=series_id,
             forecast=point,
-            params=params,
+            params=series_params,
             current_inventory=inventory_by_series.get(series_id),
             mode=mode,
             error_std=error_std.get(series_id),
             period_days=frequency.days,
+            assumed=assumed,
         )
+        # Surface which numbers we were never given, rather than passing off a
+        # built-in default as the customer's own figure.
+        if assumed:
+            recommendation.missing_params.extend(
+                f for f in assumed if f not in recommendation.missing_params
+            )
         rows.append(
             (
                 dataset_id,
@@ -585,7 +1036,15 @@ def run_value_simulation(
             cache: dict[int, np.ndarray] = {}
             offset = len(warm_values)
 
-            def fn(t: int):
+            def fn(raw_t: int):
+                # Recompute only on review dates, not every period. Two reasons,
+                # and the first one is not performance: real replenishment is
+                # reviewed on a cycle — nobody re-plans every SKU daily — so a
+                # per-period refresh would flatter us against a policy no buyer
+                # runs. It also matters that each refresh is a remote GPU call:
+                # per-period, serial, this was ~14k round trips and hours of
+                # wall clock. Quantising cuts it by REVIEW_PERIOD.
+                t = (raw_t // REVIEW_PERIOD) * REVIEW_PERIOD
                 if t not in cache:
                     history = np.concatenate([warm_values, actual_values[:t]])
                     past = future = None
@@ -671,7 +1130,7 @@ def model_mix(dataset_id: str) -> dict[str, float]:
 
 
 def get_recommendations(dataset_id: str, limit: int = 50, risk: str | None = None) -> list[dict]:
-    sql = """SELECT r.*, s.item_id, s.location_id, s.demand_class,
+    sql = """SELECT r.*, s.item_id, s.location_id, s.demand_class, s.category,
                     m.model_name, m.wape, m.mase, m.reason
              FROM recommendations r
              LEFT JOIN series_profiles s
@@ -738,3 +1197,9 @@ def get_usage(dataset_id: str) -> dict:
         "model_invocations": row["runs"] if row else 0,
         "pipeline_runs": row["runs_total"] if row else 0,
     }
+
+
+def get_hierarchy(dataset_id: str) -> dict | None:
+    """Branch and network rollup. Bottom-up, so the levels always agree."""
+    row = db.query_one("SELECT result FROM hierarchy WHERE dataset_id = ?", (dataset_id,))
+    return db.from_json(row["result"]) if row else None

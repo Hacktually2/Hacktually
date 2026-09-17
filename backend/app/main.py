@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes import router
 from .db import database as db
+from .integrations import notify
 from .forecasting.router import available_model_names, foundation_status
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -22,6 +23,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    notify.init()
     # Load foundation models once at startup, never per request. Failure is
     # survivable: the router drops whatever did not load and the pipeline still
     # runs end to end on baselines plus the calendar wrapper.

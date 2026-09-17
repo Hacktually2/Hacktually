@@ -199,3 +199,108 @@ def segment_defaults(evaluations: list[SeriesEvaluation]) -> dict[DemandClass, s
             continue
         defaults[demand_class] = min(models, key=lambda m: float(np.mean(models[m])))
     return defaults
+
+
+def evaluate_batched(
+    series_ids: list[str],
+    histories: dict[str, np.ndarray],
+    profiles: dict,
+    candidates_for,
+    seasonal_period: int,
+    horizon_for,
+    covariates: dict[str, dict] | None = None,
+    progress=None,
+) -> list[SeriesEvaluation]:
+    """Same evaluation as evaluate_series, reorganised so models see batches.
+
+    The per-series loop is the obvious way to write this and it is the wrong one
+    once a model lives behind HTTP: every candidate for every window becomes its
+    own serial round trip, and the thread pool inside the client never gets a
+    chance to do anything. Grouping by (model, window) instead lets one call
+    cover every series at once.
+
+    Local models are unaffected — their forecast_batch is a loop anyway.
+    """
+    covariates = covariates or {}
+    evaluations = {
+        sid: SeriesEvaluation(series_id=sid, demand_class=profiles[sid].demand_class)
+        for sid in series_ids
+    }
+
+    # Which series can each model compete on, and with what window layout.
+    model_work: dict[str, tuple] = {}
+    for sid in series_ids:
+        values = histories[sid]
+        horizon = horizon_for(values)
+        windows = make_windows(len(values), horizon)
+        if not windows:
+            continue
+        for model in candidates_for(profiles[sid].demand_class):
+            entry = model_work.setdefault(model.name, (model, []))
+            entry[1].append((sid, horizon, windows))
+
+    total = sum(len(v[1]) for v in model_work.values()) or 1
+    done = 0
+
+    for model_name, (model, work) in model_work.items():
+        # Windows are indexed from the end, so window i means the same thing
+        # across series even when horizons differ.
+        max_windows = max(len(w[2]) for w in work)
+
+        for window_index in range(max_windows):
+            batch_ids: list[str] = []
+            batch_hist: list[np.ndarray] = []
+            batch_actual: list[np.ndarray] = []
+            batch_past: list[dict] = []
+            batch_future: list[dict] = []
+            batch_horizon = 0
+
+            for sid, horizon, windows in work:
+                if window_index >= len(windows):
+                    continue
+                train_end, validation_end = windows[window_index]
+                values = histories[sid]
+                train = values[:train_end]
+                actual = values[train_end:validation_end]
+                if actual.size == 0:
+                    continue
+
+                past, future = _slice_covariates(
+                    covariates.get(sid), train_end, validation_end
+                )
+                batch_ids.append(sid)
+                batch_hist.append(train)
+                batch_actual.append(actual)
+                batch_past.append(past or {})
+                batch_future.append(future or {})
+                batch_horizon = max(batch_horizon, actual.size)
+
+            if not batch_ids:
+                continue
+
+            try:
+                forecasts = model.forecast_batch(
+                    batch_hist,
+                    horizon=batch_horizon,
+                    seasonal_period=seasonal_period,
+                    covariates=batch_past if any(batch_past) else None,
+                    future_covariates=batch_future if any(batch_future) else None,
+                )
+            except Exception:  # noqa: BLE001 — a failed model drops out entirely
+                continue
+
+            for sid, actual, forecast in zip(batch_ids, batch_actual, forecasts):
+                scores = score(
+                    actual,
+                    forecast.point[: actual.size],
+                    histories[sid][: len(histories[sid]) - actual.size],
+                    profiles[sid].demand_class,
+                    seasonal_period,
+                )
+                evaluations[sid].folds.setdefault(model_name, []).append(scores)
+
+            done += len(batch_ids)
+            if progress:
+                progress(done / total)
+
+    return list(evaluations.values())

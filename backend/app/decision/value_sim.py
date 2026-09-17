@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..canonical import BusinessParams
-from .reorder import z_for
+from . import economics
 
 
 @dataclass
@@ -53,6 +53,7 @@ def simulate(
     params: BusinessParams,
     label: str,
     period_days: int = 1,
+    assumed: list[str] | None = None,
 ) -> SimulationResult:
     """Period-by-period replenishment under one forecasting policy.
 
@@ -61,7 +62,10 @@ def simulate(
     difference is the forecast driving the order.
     """
     periods_in_lead_time = max(1, int(round(params.lead_time_days / max(period_days, 1))))
-    z = z_for(params.service_level)
+    # Both policies are simulated at the same derived service level, so the
+    # comparison isolates the forecast. If one policy were allowed a different
+    # stocking target, the result would measure the target, not the forecast.
+    z = economics.z_score(economics.decide(params, assumed).level)
 
     # Start both policies with the same stock so neither gets an advantage.
     inventory = float(np.mean(actual[:periods_in_lead_time]) * periods_in_lead_time)

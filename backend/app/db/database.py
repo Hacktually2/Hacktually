@@ -35,6 +35,25 @@ CREATE TABLE IF NOT EXISTS datasets (
     decision_mode   TEXT DEFAULT 'ritel'
 );
 
+-- One row per uploaded file. A dataset is the union of its sources, which is
+-- what makes multi-branch upload work: each branch sends its own export, from
+-- its own system, with its own column names, and each gets its own mapping.
+CREATE TABLE IF NOT EXISTS dataset_sources (
+    source_id       TEXT PRIMARY KEY,
+    dataset_id      TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    raw_path        TEXT NOT NULL,
+    branch_label    TEXT,
+    schema_mapping  TEXT,
+    preset_matched  TEXT,
+    mapping_confirmed INTEGER DEFAULT 0,
+    rows_received   INTEGER,
+    locations       TEXT,          -- JSON list, used to replace on re-upload
+    uploaded_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_dataset ON dataset_sources (dataset_id);
+
 CREATE TABLE IF NOT EXISTS jobs (
     job_id      TEXT PRIMARY KEY,
     dataset_id  TEXT NOT NULL,
@@ -59,6 +78,8 @@ CREATE TABLE IF NOT EXISTS series_profiles (
     censored_periods INTEGER DEFAULT 0,
     forecastable    INTEGER DEFAULT 1,
     exclusion_reason TEXT,
+    category        TEXT,
+    avg_demand      REAL,
     PRIMARY KEY (dataset_id, series_id)
 );
 
@@ -99,6 +120,32 @@ CREATE TABLE IF NOT EXISTS recommendations (
     PRIMARY KEY (dataset_id, series_id)
 );
 
+-- Business parameters the decision engine needs and must never invent.
+-- Resolved most-specific-first: series, then category, then dataset default.
+-- Category scope is what makes this usable: an ops lead sets lead time once per
+-- product group, not 428 times.
+CREATE TABLE IF NOT EXISTS business_params (
+    dataset_id        TEXT NOT NULL,
+    scope             TEXT NOT NULL,   -- 'default' | 'category' | 'series'
+    scope_value       TEXT NOT NULL DEFAULT '',
+    lead_time_days    INTEGER,
+    moq               REAL,
+    service_level     REAL,
+    unit_cost         REAL,
+    unit_margin       REAL,
+    holding_cost_rate REAL,
+    bom_factor        REAL,
+    cost_short        REAL,
+    cost_over         REAL,
+    updated_at        TEXT,
+    PRIMARY KEY (dataset_id, scope, scope_value)
+);
+
+CREATE TABLE IF NOT EXISTS hierarchy (
+    dataset_id TEXT PRIMARY KEY,
+    result     TEXT
+);
+
 CREATE TABLE IF NOT EXISTS value_simulation (
     dataset_id TEXT PRIMARY KEY,
     result     TEXT
@@ -117,11 +164,21 @@ CREATE INDEX IF NOT EXISTS idx_recs_risk ON recommendations (dataset_id, stockou
 """
 
 
+MIGRATIONS = (
+    ("business_params", "cost_short", "REAL"),
+    ("business_params", "cost_over", "REAL"),
+)
+
+
 def init() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, column, kind in MIGRATIONS:
+            existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 
 @contextmanager
