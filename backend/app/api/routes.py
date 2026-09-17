@@ -31,6 +31,7 @@ class IngestRecords(BaseModel):
 
 class MappingOverrides(BaseModel):
     overrides: dict[str, str] = {}
+    source_id: str | None = None
 
 
 class ForecastRequest(BaseModel):
@@ -79,13 +80,49 @@ def get_mapping(dataset_id: str):
 @router.post("/datasets/{dataset_id}/mapping")
 def confirm_mapping(dataset_id: str, body: MappingOverrides):
     try:
-        result = svc.confirm_mapping(dataset_id, body.overrides)
+        result = svc.confirm_mapping(dataset_id, body.overrides, body.source_id)
         result["health"] = svc.prepare(dataset_id)
         return result
     except KeyError:
         raise HTTPException(status_code=404, detail="dataset not found")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/datasets/{dataset_id}/append")
+async def append_branch(
+    dataset_id: str,
+    file: UploadFile = File(...),
+    branch_label: str | None = None,
+):
+    """Add another branch's export to an existing dataset.
+
+    Each branch keeps its own column mapping, so Jakarta on Accurate and
+    Surabaya on Jubelio can both upload without either changing anything.
+    """
+    try:
+        payload = await file.read()
+        return svc.append_source(
+            dataset_id, file.filename or "branch.csv", payload, branch_label
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/datasets/{dataset_id}/sources")
+def list_sources(dataset_id: str):
+    return {"dataset_id": dataset_id, "sources": svc.list_sources(dataset_id)}
+
+
+@router.get("/datasets/{dataset_id}/hierarchy")
+def get_hierarchy(dataset_id: str):
+    """Branch and network rollup. Bottom-up, so the levels always reconcile."""
+    result = svc.get_hierarchy(dataset_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="no hierarchy yet — run a forecast first")
+    return result
 
 
 @router.get("/datasets/{dataset_id}/health")

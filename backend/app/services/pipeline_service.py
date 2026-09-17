@@ -20,6 +20,7 @@ from ..canonical import (
     DemandClass,
     Frequency,
     INVENTORY,
+    LOCATION_ID,
     SERIES_ID,
     SchemaMapping,
     TARGET,
@@ -27,14 +28,15 @@ from ..canonical import (
     split_series_id,
 )
 from ..cleaning import health as health_mod
-from ..cleaning.pipeline import canonicalize, clean
+from ..cleaning.pipeline import CleaningReport, canonicalize, clean
 from ..db import database as db
 from ..decision import reorder as reorder_mod
+from ..decision import hierarchy as hierarchy_mod
 from ..decision import value_sim
 from ..demand.classifier import portfolio_summary, profile_series
 from ..enrich import calendar as calendar_mod
 from ..enrich import censoring
-from ..evaluation.backtest import evaluate_series, segment_defaults, select_model
+from ..evaluation.backtest import evaluate_batched, segment_defaults, select_model
 from ..forecasting.baselines import MovingAverageModel
 from ..forecasting.router import candidates_for
 from ..schema.mapper import build_mapping
@@ -43,7 +45,12 @@ from ..schema.profiler import profile_dataframe
 log = logging.getLogger(__name__)
 
 DEFAULT_HORIZON = 30
-MAX_SERIES_FOR_VALUE_SIM = 60
+MAX_SERIES_FOR_VALUE_SIM = 30
+
+# Replenishment is reviewed on a cycle, not every day. Weekly matches how
+# mid-market buyers actually place orders, and it is what keeps the value
+# simulation to a few hundred GPU calls instead of tens of thousands.
+REVIEW_PERIOD = 7
 
 
 def _now() -> str:
@@ -65,16 +72,66 @@ def read_any(path: Path) -> pl.DataFrame:
 
 # ---------------------------------------------------------------- ingestion
 
-def ingest(filename: str, raw_bytes: bytes) -> dict:
-    dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
+def _store_source(
+    dataset_id: str, filename: str, raw_bytes: bytes, branch_label: str | None
+) -> dict:
+    """Persist one uploaded file and profile it on its own terms.
+
+    Each source gets its OWN mapping. That is the point of multi-branch upload:
+    the Jakarta branch may export from Accurate and Surabaya from Jubelio, and
+    neither should have to change anything for the other.
+    """
+    source_id = f"src_{uuid.uuid4().hex[:10]}"
     db.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     suffix = Path(filename).suffix or ".csv"
-    raw_path = db.UPLOAD_DIR / f"{dataset_id}{suffix}"
+    raw_path = db.UPLOAD_DIR / f"{source_id}{suffix}"
     raw_path.write_bytes(raw_bytes)
 
     df = read_any(raw_path)
-    profiles = profile_dataframe(df)
-    mapping = build_mapping(df.columns, profiles)
+    mapping = build_mapping(df.columns, profile_dataframe(df))
+
+    # Which locations this file covers, so a re-upload replaces rather than doubles.
+    locations: list[str] = []
+    location_column = mapping.get(LOCATION_ID)
+    if location_column and location_column in df.columns:
+        locations = [
+            str(v)
+            for v in df.get_column(location_column).drop_nulls().unique().to_list()
+        ][:200]
+
+    db.execute(
+        """INSERT INTO dataset_sources
+           (source_id, dataset_id, filename, raw_path, branch_label, schema_mapping,
+            preset_matched, rows_received, locations, uploaded_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            source_id,
+            dataset_id,
+            filename,
+            str(raw_path),
+            branch_label,
+            db.to_json(mapping.model_dump()),
+            mapping.preset_matched,
+            df.height,
+            db.to_json(locations),
+            _now(),
+        ),
+    )
+
+    return {
+        "source_id": source_id,
+        "rows": df.height,
+        "columns": df.columns,
+        "locations": locations,
+        "preset_matched": mapping.preset_matched,
+        "mapping": mapping.model_dump(),
+        "raw_path": str(raw_path),
+    }
+
+
+def ingest(filename: str, raw_bytes: bytes, branch_label: str | None = None) -> dict:
+    dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
+    source = _store_source(dataset_id, filename, raw_bytes, branch_label)
 
     db.execute(
         """INSERT INTO datasets
@@ -84,20 +141,79 @@ def ingest(filename: str, raw_bytes: bytes) -> dict:
             dataset_id,
             filename,
             _now(),
-            str(raw_path),
-            db.to_json(mapping.model_dump()),
-            mapping.preset_matched,
+            source["raw_path"],
+            db.to_json(source["mapping"]),
+            source["preset_matched"],
         ),
     )
 
     return {
         "dataset_id": dataset_id,
+        "source_id": source["source_id"],
         "status": "awaiting_mapping",
-        "rows": df.height,
-        "columns": df.columns,
-        "preset_matched": mapping.preset_matched,
-        "mapping": mapping.model_dump(),
+        "rows": source["rows"],
+        "columns": source["columns"],
+        "locations": source["locations"],
+        "preset_matched": source["preset_matched"],
+        "mapping": source["mapping"],
     }
+
+
+def append_source(
+    dataset_id: str, filename: str, raw_bytes: bytes, branch_label: str | None = None
+) -> dict:
+    """Add another branch's file to an existing dataset.
+
+    Re-uploading the same branch replaces its previous file rather than adding to
+    it — otherwise a manager correcting last week's export would silently double
+    that branch's demand, and nothing downstream would notice.
+    """
+    if not db.query_one("SELECT 1 FROM datasets WHERE dataset_id = ?", (dataset_id,)):
+        raise KeyError(dataset_id)
+
+    source = _store_source(dataset_id, filename, raw_bytes, branch_label)
+    incoming = set(source["locations"])
+
+    replaced: list[str] = []
+    if incoming:
+        for row in db.query(
+            "SELECT source_id, locations FROM dataset_sources WHERE dataset_id = ? AND source_id != ?",
+            (dataset_id, source["source_id"]),
+        ):
+            existing = set(db.from_json(row["locations"], []) or [])
+            if existing and existing <= incoming:
+                db.execute(
+                    "DELETE FROM dataset_sources WHERE source_id = ?", (row["source_id"],)
+                )
+                replaced.append(row["source_id"])
+
+    sources = list_sources(dataset_id)
+    return {
+        "dataset_id": dataset_id,
+        "source_id": source["source_id"],
+        "rows": source["rows"],
+        "locations": source["locations"],
+        "preset_matched": source["preset_matched"],
+        "mapping": source["mapping"],
+        "replaced_sources": replaced,
+        "sources_total": len(sources),
+        "status": "awaiting_mapping" if source["mapping"] else "ready",
+    }
+
+
+def list_sources(dataset_id: str) -> list[dict]:
+    rows = db.query(
+        """SELECT source_id, filename, branch_label, preset_matched, rows_received,
+                  locations, mapping_confirmed, uploaded_at
+           FROM dataset_sources WHERE dataset_id = ? ORDER BY uploaded_at""",
+        (dataset_id,),
+    )
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["locations"] = db.from_json(item["locations"], []) or []
+        out.append(item)
+    return out
 
 
 def ingest_records(source: str, records: list[dict]) -> dict:
@@ -123,42 +239,138 @@ def get_mapping(dataset_id: str) -> dict:
     }
 
 
-def confirm_mapping(dataset_id: str, overrides: dict[str, str] | None = None) -> dict:
-    row = db.query_one("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
-    if not row:
+def _apply_overrides(
+    mapping: SchemaMapping, overrides: dict[str, str] | None
+) -> SchemaMapping:
+    for field in mapping.fields:
+        if overrides and field.canonical in overrides:
+            field.source_column = overrides[field.canonical] or None
+            field.confidence = 1.0
+            field.reason = "confirmed by user"
+    return mapping
+
+
+def confirm_mapping(
+    dataset_id: str,
+    overrides: dict[str, str] | None = None,
+    source_id: str | None = None,
+) -> dict:
+    """Confirm one branch's mapping, or every branch's when source_id is omitted.
+
+    Overrides are per source, because a correction that makes sense for Jakarta's
+    Accurate export is meaningless for Surabaya's Jubelio one — the column does
+    not even exist there. So an override is only applied to a source that
+    actually has that column.
+    """
+    if not db.query_one("SELECT 1 FROM datasets WHERE dataset_id = ?", (dataset_id,)):
         raise KeyError(dataset_id)
 
-    mapping = SchemaMapping(**db.from_json(row["schema_mapping"], {"fields": []}))
-    if overrides:
-        for field in mapping.fields:
-            if field.canonical in overrides:
-                field.source_column = overrides[field.canonical] or None
-                field.confidence = 1.0
-                field.reason = "confirmed by user"
-
-    missing = mapping.missing_required()
-    if missing:
-        raise ValueError(f"still missing required fields: {', '.join(missing)}")
-
-    mapping.confirmed = True
-    db.execute(
-        "UPDATE datasets SET schema_mapping = ?, mapping_confirmed = 1 WHERE dataset_id = ?",
-        (db.to_json(mapping.model_dump()), dataset_id),
+    sources = db.query(
+        "SELECT * FROM dataset_sources WHERE dataset_id = ?"
+        + (" AND source_id = ?" if source_id else ""),
+        (dataset_id, source_id) if source_id else (dataset_id,),
     )
-    return {"dataset_id": dataset_id, "confirmed": True, "mapping": mapping.model_dump()}
+    if not sources:
+        raise KeyError(source_id or dataset_id)
+
+    confirmed: list[dict] = []
+    problems: list[dict] = []
+
+    for source in sources:
+        mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
+        columns = {f.source_column for f in mapping.fields if f.source_column}
+        relevant = (
+            {k: v for k, v in overrides.items() if not v or v in columns or source_id}
+            if overrides
+            else None
+        )
+        mapping = _apply_overrides(mapping, relevant)
+
+        missing = mapping.missing_required()
+        if missing:
+            problems.append(
+                {
+                    "source_id": source["source_id"],
+                    "filename": source["filename"],
+                    "missing": missing,
+                }
+            )
+            continue
+
+        mapping.confirmed = True
+        db.execute(
+            "UPDATE dataset_sources SET schema_mapping = ?, mapping_confirmed = 1 WHERE source_id = ?",
+            (db.to_json(mapping.model_dump()), source["source_id"]),
+        )
+        confirmed.append(
+            {"source_id": source["source_id"], "filename": source["filename"]}
+        )
+        # Keep the dataset row in step for anything still reading it.
+        db.execute(
+            "UPDATE datasets SET schema_mapping = ?, mapping_confirmed = 1 WHERE dataset_id = ?",
+            (db.to_json(mapping.model_dump()), dataset_id),
+        )
+
+    if not confirmed:
+        detail = "; ".join(
+            f"{p['filename']} missing {', '.join(p['missing'])}" for p in problems
+        )
+        raise ValueError(f"no source could be confirmed: {detail}")
+
+    return {
+        "dataset_id": dataset_id,
+        "confirmed": confirmed,
+        "needs_attention": problems,
+        "mapping": SchemaMapping(
+            **db.from_json(
+                db.query_one(
+                    "SELECT schema_mapping FROM datasets WHERE dataset_id = ?",
+                    (dataset_id,),
+                )["schema_mapping"],
+                {"fields": []},
+            )
+        ).model_dump(),
+    }
 
 
 # ---------------------------------------------------------------- preparation
 
 def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict]:
+    """Union every source, each canonicalized with its own mapping, then clean once.
+
+    Cleaning has to happen after the union, not per source: frequency detection
+    and duplicate aggregation only make sense across the whole picture.
+    """
     row = db.query_one("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
     if not row:
         raise KeyError(dataset_id)
 
-    mapping = SchemaMapping(**db.from_json(row["schema_mapping"], {"fields": []}))
-    df = read_any(Path(row["raw_path"]))
+    sources = db.query(
+        "SELECT * FROM dataset_sources WHERE dataset_id = ? ORDER BY uploaded_at",
+        (dataset_id,),
+    )
+    if not sources:
+        # Pre-multi-source dataset. Fall back to the single file on the row.
+        sources = [row]
 
-    canonical, report = canonicalize(df, mapping)
+    frames: list[pl.DataFrame] = []
+    rows_received = 0
+    for source in sources:
+        mapping = SchemaMapping(**db.from_json(source["schema_mapping"], {"fields": []}))
+        if mapping.missing_required():
+            continue
+        frame, partial = canonicalize(read_any(Path(source["raw_path"])), mapping)
+        rows_received += partial.rows_received
+        if frame.height:
+            frames.append(frame)
+
+    if not frames:
+        raise ValueError("no source in this dataset has a usable mapping yet")
+
+    canonical = frames[0] if len(frames) == 1 else pl.concat(frames, how="diagonal")
+
+    report = CleaningReport()
+    report.rows_received = rows_received
     canonical, report = clean(canonical, report)
     frequency = Frequency(report.frequency)
 
@@ -301,21 +513,16 @@ def run_forecast(
     seasonal_period = frequency.seasonal_period
 
     progress(20, "backtesting candidate models")
-    evaluations = []
-    for series_id in series_ids:
-        profile = profiles[series_id]
-        models = candidates_for(profile.demand_class)
-        evaluations.append(
-            evaluate_series(
-                series_id,
-                histories[series_id],
-                profile,
-                models,
-                horizon=min(horizon, max(7, len(histories[series_id]) // 4)),
-                seasonal_period=seasonal_period,
-                covariates=covariates.get(series_id),
-            )
-        )
+    evaluations = evaluate_batched(
+        series_ids,
+        histories,
+        profiles,
+        candidates_for,
+        seasonal_period=seasonal_period,
+        horizon_for=lambda values: min(horizon, max(7, len(values) // 4)),
+        covariates=covariates,
+        progress=lambda fraction: progress(20 + int(fraction * 30), "backtesting"),
+    )
 
     defaults = segment_defaults(evaluations)
 
@@ -439,6 +646,21 @@ def run_forecast(
 
     progress(80, "building recommendations")
     build_recommendations(dataset_id, canonical, final_forecasts, frequency, error_std=error_std)
+
+    # Roll branch-level forecasts up to network level. Bottom-up, so the branch
+    # numbers and the network total can never disagree.
+    recommendations_by_series = {
+        r["series_id"]: r for r in get_recommendations(dataset_id, limit=100_000)
+    }
+    hierarchy = hierarchy_mod.build(final_forecasts, recommendations_by_series)
+    hierarchy["coherence"] = hierarchy_mod.coherence_check(
+        hierarchy["network"]["horizon_total"],
+        [b["horizon_total"] for b in hierarchy["branches"]],
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO hierarchy (dataset_id, result) VALUES (?, ?)",
+        (dataset_id, db.to_json(hierarchy)),
+    )
 
     progress(90, "simulating business value")
     try:
@@ -585,7 +807,15 @@ def run_value_simulation(
             cache: dict[int, np.ndarray] = {}
             offset = len(warm_values)
 
-            def fn(t: int):
+            def fn(raw_t: int):
+                # Recompute only on review dates, not every period. Two reasons,
+                # and the first one is not performance: real replenishment is
+                # reviewed on a cycle — nobody re-plans every SKU daily — so a
+                # per-period refresh would flatter us against a policy no buyer
+                # runs. It also matters that each refresh is a remote GPU call:
+                # per-period, serial, this was ~14k round trips and hours of
+                # wall clock. Quantising cuts it by REVIEW_PERIOD.
+                t = (raw_t // REVIEW_PERIOD) * REVIEW_PERIOD
                 if t not in cache:
                     history = np.concatenate([warm_values, actual_values[:t]])
                     past = future = None
@@ -738,3 +968,9 @@ def get_usage(dataset_id: str) -> dict:
         "model_invocations": row["runs"] if row else 0,
         "pipeline_runs": row["runs_total"] if row else 0,
     }
+
+
+def get_hierarchy(dataset_id: str) -> dict | None:
+    """Branch and network rollup. Bottom-up, so the levels always agree."""
+    row = db.query_one("SELECT result FROM hierarchy WHERE dataset_id = ?", (dataset_id,))
+    return db.from_json(row["result"]) if row else None

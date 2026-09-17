@@ -35,6 +35,25 @@ CREATE TABLE IF NOT EXISTS datasets (
     decision_mode   TEXT DEFAULT 'ritel'
 );
 
+-- One row per uploaded file. A dataset is the union of its sources, which is
+-- what makes multi-branch upload work: each branch sends its own export, from
+-- its own system, with its own column names, and each gets its own mapping.
+CREATE TABLE IF NOT EXISTS dataset_sources (
+    source_id       TEXT PRIMARY KEY,
+    dataset_id      TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    raw_path        TEXT NOT NULL,
+    branch_label    TEXT,
+    schema_mapping  TEXT,
+    preset_matched  TEXT,
+    mapping_confirmed INTEGER DEFAULT 0,
+    rows_received   INTEGER,
+    locations       TEXT,          -- JSON list, used to replace on re-upload
+    uploaded_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_dataset ON dataset_sources (dataset_id);
+
 CREATE TABLE IF NOT EXISTS jobs (
     job_id      TEXT PRIMARY KEY,
     dataset_id  TEXT NOT NULL,
@@ -97,6 +116,11 @@ CREATE TABLE IF NOT EXISTS recommendations (
     raw_material_qty    REAL,
     explanation_json    TEXT,
     PRIMARY KEY (dataset_id, series_id)
+);
+
+CREATE TABLE IF NOT EXISTS hierarchy (
+    dataset_id TEXT PRIMARY KEY,
+    result     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS value_simulation (
