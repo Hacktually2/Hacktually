@@ -665,7 +665,7 @@ export function accessibleLocations(
   const [a, b] = idVariants(forecastProjectId);
   const claiming = db
     .prepare(
-      `SELECT br.code, (p.owner_id = ?1 OR acc.user_id IS NOT NULL) AS allowed
+      `SELECT br.code, p.owner_id, acc.user_id AS granted
        FROM branches br
        JOIN projects p             ON p.id = br.project_id
        LEFT JOIN branch_access acc ON acc.branch_id = br.id AND acc.user_id = ?1
@@ -673,8 +673,18 @@ export function accessibleLocations(
     )
     .all(userId, a, b) as Row[];
 
+  // Nothing claims it: not governed by this layer, so not restricted either.
   if (claiming.length === 0) return null;
-  return claiming.filter((row) => num(row, "allowed") === 1).map((row) => text(row, "code"));
+
+  // The owner of the project that claims it sees the whole network. This is the
+  // distinction that has to be kept: returning their branch list instead of
+  // null reads as "restricted to these", and the caller then scopes an owner to
+  // one branch — which is what happened before this was split out.
+  if (claiming.some((row) => text(row, "owner_id") === userId)) return null;
+
+  return claiming
+    .filter((row) => row.granted !== null)
+    .map((row) => text(row, "code"));
 }
 
 export function hasBranchAccess(userId: string, branchId: string): boolean {

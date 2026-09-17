@@ -18,6 +18,7 @@ import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 import { timingSafeEqual } from "node:crypto";
 import {
+  accessibleLocations,
   findBranchByForecastProject,
   getProject,
   getUser,
@@ -149,6 +150,78 @@ export async function requireForecastAccess(forecastProjectId: string): Promise<
   if (project?.owner_id === user.id) return user;
   if (!hasBranchAccess(user.id, branch.id)) notFound();
   return user;
+}
+
+export interface BranchScope {
+  /**
+   * The branch this request is scoped to, or null for the whole network.
+   *
+   * Null is only ever returned to someone entitled to everything. A restricted
+   * user always gets a concrete branch — there is no path where "I hold some
+   * branches" becomes "show me all of them".
+   */
+  location: string | null;
+  /** Every location this user may see, or null for unrestricted. */
+  locations: string[] | null;
+  /** Branches to offer in the picker. Empty when there is nothing to choose. */
+  options: string[];
+  /** True when this user cannot see the whole network. */
+  restricted: boolean;
+}
+
+/** A code that matches nothing, so a bad scope returns no rows rather than all. */
+const NO_BRANCH = "__none__";
+
+/**
+ * Which branch a dashboard request is scoped to.
+ *
+ * The forecasting service takes one `?location=` per call. A manager holding
+ * several branches therefore has to look at one at a time, and `requested` is
+ * which — it comes from the URL, so it is untrusted and checked against what
+ * they actually hold.
+ *
+ * The rule that matters: **a restricted user never gets an unscoped request.**
+ * An earlier version returned null for a multi-branch manager and showed a note
+ * explaining why the whole network was on screen. A note beside leaked data is
+ * not a control: their overview carried every branch's KPIs and the owner's
+ * exact totals. Now an unrecognised or unauthorised `requested` falls back to
+ * the first branch they hold, and holding none scopes to a code that matches
+ * nothing.
+ */
+export async function branchScope(
+  forecastProjectId: string,
+  requested?: string | null,
+): Promise<BranchScope> {
+  const user = await requireSession();
+  const locations = accessibleLocations(user.id, forecastProjectId);
+
+  // Unrestricted: the whole network by default, one branch if they asked for
+  // one. An owner focusing a single branch is a feature, not a restriction.
+  if (locations === null) {
+    return {
+      location: requested || null,
+      locations: null,
+      options: [],
+      restricted: false,
+    };
+  }
+
+  if (locations.length === 0) {
+    return { location: NO_BRANCH, locations, options: [], restricted: true };
+  }
+
+  // Untrusted input: only a branch they hold is honoured. Anything else — a
+  // typo, another branch's code, a revoked grant — falls back rather than
+  // widening.
+  const location =
+    requested && locations.includes(requested) ? requested : locations[0];
+
+  return {
+    location,
+    locations,
+    options: locations.length > 1 ? locations : [],
+    restricted: true,
+  };
 }
 
 /** For the owner-only surfaces: inviting managers, deciding requests. */

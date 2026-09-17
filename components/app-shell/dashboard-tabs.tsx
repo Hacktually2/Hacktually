@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSelectedLayoutSegment } from "next/navigation";
+import { useSearchParams, useSelectedLayoutSegment } from "next/navigation";
 
 /**
  * The three persistent dashboard destinations (design.md §32).
@@ -18,6 +18,10 @@ const TABS = [
 
 export function DashboardTabs({ base }: { base: string }) {
   const active = useSelectedLayoutSegment();
+  // The chosen branch has to travel with the tab, or switching section silently
+  // drops the scope and the server falls back to the first branch instead.
+  const branch = useSearchParams().get("branch");
+  const suffix = branch ? `?branch=${encodeURIComponent(branch)}` : "";
 
   return (
     // The three labels are wider than a small phone. Rather than abbreviating
@@ -33,7 +37,7 @@ export function DashboardTabs({ base }: { base: string }) {
         return (
           <Link
             key={tab.label}
-            href={`${base}${tab.href}`}
+            href={`${base}${tab.href}${suffix}`}
             aria-current={isActive ? "page" : undefined}
             className={`relative shrink-0 rounded-sm px-3 py-2 text-body-sm font-semibold whitespace-nowrap transition-colors duration-(--duration-fast) ease-(--ease-standard) ${
               isActive
