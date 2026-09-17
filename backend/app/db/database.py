@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS datasets (
     health_score    INTEGER,
     health_report   TEXT,
     frequency       TEXT,
-    decision_mode   TEXT DEFAULT 'ritel'
+    decision_mode   TEXT DEFAULT 'ritel',
+    tenant_id       TEXT,          -- who uploaded it; a request for another tenant 404s
+    pii_report      TEXT
 );
 
 -- One row per uploaded file. A dataset is the union of its sources, which is
@@ -167,6 +169,8 @@ CREATE INDEX IF NOT EXISTS idx_recs_risk ON recommendations (dataset_id, stockou
 MIGRATIONS = (
     ("business_params", "cost_short", "REAL"),
     ("business_params", "cost_over", "REAL"),
+    ("datasets", "tenant_id", "TEXT"),
+    ("datasets", "pii_report", "TEXT"),
 )
 
 

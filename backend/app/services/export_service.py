@@ -46,9 +46,24 @@ def filename(dataset_id: str, kind: str) -> str:
     return f"{kind}_{dataset_id}_{stamp}.csv"
 
 
-def recommendations_csv(dataset_id: str, delimiter: str = ";", limit: int = 10_000) -> str:
-    """The action list. What to order, how much, and why — in one sheet."""
+def _scoped(dataset_id: str, location: str | None, limit: int = 10_000) -> list[dict]:
+    """Recommendations for one branch, or all of them.
+
+    Without the location argument this returned every branch to anyone holding
+    the dataset id, so a branch manager pressing Export downloaded the whole
+    company. The screens were scoped and the download was not.
+    """
     rows = svc.get_recommendations(dataset_id, limit=limit)
+    if location:
+        rows = [r for r in rows if (r.get("location_id") or "") == location]
+    return rows
+
+
+def recommendations_csv(
+    dataset_id: str, delimiter: str = ";", limit: int = 10_000, location: str | None = None
+) -> str:
+    """The action list. What to order, how much, and why — in one sheet."""
+    rows = _scoped(dataset_id, location, limit)
     buffer, writer = _writer(delimiter)
 
     writer.writerow([
@@ -89,7 +104,9 @@ def recommendations_csv(dataset_id: str, delimiter: str = ";", limit: int = 10_0
     return _finish(buffer)
 
 
-def purchase_orders_csv(dataset_id: str, delimiter: str = ";", min_qty: float = 1.0) -> str:
+def purchase_orders_csv(
+    dataset_id: str, delimiter: str = ";", min_qty: float = 1.0, location: str | None = None
+) -> str:
     """One block per branch, shaped like something you would send a supplier.
 
     Grouped rather than flat because a purchase order goes to one branch's
@@ -97,7 +114,7 @@ def purchase_orders_csv(dataset_id: str, delimiter: str = ";", min_qty: float = 
     nobody wants to scroll past 300 rows of "order nothing".
     """
     rows = [
-        r for r in svc.get_recommendations(dataset_id, limit=10_000)
+        r for r in _scoped(dataset_id, location)
         if (r.get("recommended_qty") or 0) >= min_qty
     ]
 
@@ -141,19 +158,21 @@ def purchase_orders_csv(dataset_id: str, delimiter: str = ";", min_qty: float = 
     return _finish(buffer)
 
 
-def forecasts_csv(dataset_id: str, delimiter: str = ";", limit: int = 200_000) -> str:
+def forecasts_csv(
+    dataset_id: str, delimiter: str = ";", limit: int = 200_000, location: str | None = None
+) -> str:
     """Per-period forecast with intervals. The sheet an analyst actually wants."""
-    rows = db.query(
-        """SELECT f.series_id, s.item_id, s.location_id, f.timestamp,
-                  f.forecast, f.lower, f.upper, f.model_name
-           FROM forecasts f
-           LEFT JOIN series_profiles s
-             ON s.dataset_id = f.dataset_id AND s.series_id = f.series_id
-           WHERE f.dataset_id = ?
-           ORDER BY f.series_id, f.timestamp
-           LIMIT ?""",
-        (dataset_id, limit),
-    )
+    sql = """SELECT f.series_id, s.item_id, s.location_id, f.timestamp,
+                    f.forecast, f.lower, f.upper, f.model_name
+             FROM forecasts f
+             LEFT JOIN series_profiles s
+               ON s.dataset_id = f.dataset_id AND s.series_id = f.series_id
+             WHERE f.dataset_id = ?"""
+    params: tuple = (dataset_id,)
+    if location:
+        sql += " AND s.location_id = ?"
+        params = (dataset_id, location)
+    rows = db.query(sql + " ORDER BY f.series_id, f.timestamp LIMIT ?", (*params, limit))
 
     buffer, writer = _writer(delimiter)
     writer.writerow([
@@ -172,7 +191,9 @@ def forecasts_csv(dataset_id: str, delimiter: str = ";", limit: int = 200_000) -
     return _finish(buffer)
 
 
-def data_health_csv(dataset_id: str, delimiter: str = ";") -> str:
+def data_health_csv(
+    dataset_id: str, delimiter: str = ";", location: str | None = None
+) -> str:
     """What we found and what to fix — the onboarding deliverable, as a sheet."""
     health = svc.get_health(dataset_id)
     buffer, writer = _writer(delimiter)

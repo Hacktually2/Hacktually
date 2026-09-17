@@ -7,6 +7,7 @@ never lives in an endpoint or an MCP tool.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,7 @@ from ..enrich import censoring
 from ..evaluation.backtest import evaluate_batched, segment_defaults, select_model
 from ..forecasting.baselines import MovingAverageModel
 from ..forecasting.router import candidates_for
+from ..schema import pii as pii_mod
 from ..schema import reshape as reshape_mod
 from ..schema.mapper import build_mapping
 from ..schema.profiler import profile_dataframe
@@ -104,7 +106,8 @@ def _store_source(
     raw_path.write_bytes(raw_bytes)
 
     df, wide_info = read_reshaped(raw_path)
-    mapping = build_mapping(df.columns, profile_dataframe(df))
+    profiles = profile_dataframe(df)
+    mapping = build_mapping(df.columns, profiles)
 
     # Reshaping created the timestamp and target columns, so they are known
     # facts rather than inferences — overwrite whatever the rules guessed.
@@ -146,26 +149,37 @@ def _store_source(
         ),
     )
 
+    # Look for personal data now, while the choice to drop a column is still
+    # cheap. Reported, never removed.
+    pii = pii_mod.scan(profiles, {f.source_column for f in mapping.fields if f.source_column})
+
     return {
         "source_id": source_id,
         "rows": df.height,
         "columns": df.columns,
         "locations": locations,
         "wide_format": wide_info,
+        "pii": pii,
         "preset_matched": mapping.preset_matched,
         "mapping": mapping.model_dump(),
         "raw_path": str(raw_path),
     }
 
 
-def ingest(filename: str, raw_bytes: bytes, branch_label: str | None = None) -> dict:
+def ingest(
+    filename: str,
+    raw_bytes: bytes,
+    branch_label: str | None = None,
+    tenant_id: str | None = None,
+) -> dict:
     dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
     source = _store_source(dataset_id, filename, raw_bytes, branch_label)
 
     db.execute(
         """INSERT INTO datasets
-           (dataset_id, filename, created_at, raw_path, schema_mapping, preset_matched)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (dataset_id, filename, created_at, raw_path, schema_mapping, preset_matched,
+            tenant_id, pii_report)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             dataset_id,
             filename,
@@ -173,6 +187,8 @@ def ingest(filename: str, raw_bytes: bytes, branch_label: str | None = None) -> 
             source["raw_path"],
             db.to_json(source["mapping"]),
             source["preset_matched"],
+            tenant_id,
+            db.to_json(source.get("pii")),
         ),
     )
 
@@ -186,6 +202,7 @@ def ingest(filename: str, raw_bytes: bytes, branch_label: str | None = None) -> 
         "preset_matched": source["preset_matched"],
         "mapping": source["mapping"],
         "wide_format": source.get("wide_format"),
+        "pii": source.get("pii"),
     }
 
 
@@ -225,6 +242,7 @@ def append_source(
         "locations": source["locations"],
         "preset_matched": source["preset_matched"],
         "mapping": source["mapping"],
+        "pii": source.get("pii"),
         "replaced_sources": replaced,
         "sources_total": len(sources),
         "status": "awaiting_mapping" if source["mapping"] else "ready",
@@ -246,11 +264,69 @@ def list_sources(dataset_id: str) -> list[dict]:
     return out
 
 
-def ingest_records(source: str, records: list[dict]) -> dict:
+def ingest_records(
+    source: str, records: list[dict], tenant_id: str | None = None
+) -> dict:
     """API ingestion goes through the same mapping path — field names still differ."""
     df = pl.DataFrame(records)
     payload = df.write_csv().encode()
-    return ingest(f"{source}.csv", payload)
+    return ingest(f"{source}.csv", payload, tenant_id=tenant_id)
+
+
+def tenant_of_dataset(dataset_id: str) -> str | None:
+    row = db.query_one("SELECT tenant_id FROM datasets WHERE dataset_id = ?", (dataset_id,))
+    if not row:
+        raise KeyError(dataset_id)
+    return row["tenant_id"]
+
+
+def purge(dataset_id: str) -> dict:
+    """Delete a dataset, everything derived from it, and the uploaded files.
+
+    Erasure has to reach the raw upload, not just the rows. A customer who asks
+    for their data to be removed and finds the original CSV still sitting in
+    data/uploads has not had their data removed.
+    """
+    row = db.query_one("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
+    if not row:
+        raise KeyError(dataset_id)
+
+    paths = [row["raw_path"]] + [
+        r["raw_path"] for r in db.query(
+            "SELECT raw_path FROM dataset_sources WHERE dataset_id = ?", (dataset_id,)
+        )
+    ]
+    files_removed = 0
+    for path in {p for p in paths if p}:
+        try:
+            target = Path(path)
+            if target.exists():
+                target.unlink()
+                files_removed += 1
+        except OSError as exc:  # noqa: PERF203 — report rather than fail the purge
+            log.warning("could not delete %s: %s", path, exc)
+
+    tables = (
+        "forecasts", "model_selection", "recommendations", "series_profiles",
+        "hierarchy", "value_simulation", "usage_meter", "business_params",
+        "jobs", "dataset_sources", "notification_log", "datasets",
+    )
+    deleted = {}
+    for table in tables:
+        try:
+            before = db.query_one(f"SELECT COUNT(*) n FROM {table} WHERE dataset_id = ?", (dataset_id,))
+            db.execute(f"DELETE FROM {table} WHERE dataset_id = ?", (dataset_id,))
+            if before and before["n"]:
+                deleted[table] = before["n"]
+        except Exception as exc:  # noqa: BLE001 — a missing table must not stop erasure
+            log.warning("purge skipped %s: %s", table, exc)
+
+    return {
+        "dataset_id": dataset_id,
+        "deleted_rows": deleted,
+        "files_removed": files_removed,
+        "note": "Uploaded files and every derived result have been removed.",
+    }
 
 
 # ---------------------------------------------------------------- mapping
@@ -1203,3 +1279,57 @@ def get_hierarchy(dataset_id: str) -> dict | None:
     """Branch and network rollup. Bottom-up, so the levels always agree."""
     row = db.query_one("SELECT result FROM hierarchy WHERE dataset_id = ?", (dataset_id,))
     return db.from_json(row["result"]) if row else None
+
+
+def privacy_report(dataset_id: str) -> dict:
+    """What personal data was found, and what leaves this service.
+
+    Written to be shown to a customer, because "where does my data go" is a
+    question that deserves a specific answer rather than a reassurance.
+    """
+    row = db.query_one(
+        "SELECT pii_report, tenant_id, filename FROM datasets WHERE dataset_id = ?",
+        (dataset_id,),
+    )
+    if not row:
+        raise KeyError(dataset_id)
+
+    sources = db.query(
+        "SELECT filename, raw_path FROM dataset_sources WHERE dataset_id = ?",
+        (dataset_id,),
+    )
+    gpu_configured = bool(os.getenv("GPU_INFERENCE_URL"))
+
+    return {
+        "dataset_id": dataset_id,
+        "tenant_id": row["tenant_id"],
+        "personal_data": db.from_json(row["pii_report"], {"found": False}),
+        "stored": {
+            "uploaded_files": len(sources),
+            "location": str(db.UPLOAD_DIR),
+            "note": "Raw uploads stay on this host. DELETE the dataset to remove them.",
+        },
+        "leaves_this_service": [
+            {
+                "destination": "GPU forecasting service",
+                "active": gpu_configured,
+                "what": "demand quantities only, as an unlabelled numeric series",
+                "not_sent": [
+                    "item names and codes",
+                    "branch names and codes",
+                    "prices and costs",
+                    "any column flagged as personal data",
+                ],
+            },
+            {
+                "destination": "Email / Slack digest",
+                "active": bool(os.getenv("SMTP_HOST") or os.getenv("SLACK_WEBHOOK_URL")),
+                "what": "item codes, order quantities and days of cover for one branch",
+                "not_sent": ["personal data", "prices", "other branches"],
+            },
+        ],
+        "never_sent_anywhere": [
+            "the uploaded file itself",
+            "customer or staff identities",
+        ],
+    }

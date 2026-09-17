@@ -335,12 +335,18 @@ def _aggregate_chart(dataset_id: str, series_filter: set[str] | None = None) -> 
 
 # -------------------------------------------------------------------- projects
 
-def projects() -> list[dict]:
-    rows = db.query(
-        """SELECT dataset_id, filename, created_at, health_score, frequency,
-                  decision_mode, mapping_confirmed, health_report
-           FROM datasets ORDER BY created_at DESC LIMIT 50"""
-    )
+def projects(tenant_id: str | None = None) -> list[dict]:
+    """Every project this tenant owns. Never another tenant's."""
+    from .. import security
+
+    sql = """SELECT dataset_id, filename, created_at, health_score, frequency,
+                    decision_mode, mapping_confirmed, health_report
+             FROM datasets"""
+    params: tuple = ()
+    if security.tenancy_enabled():
+        sql += " WHERE tenant_id IS ?"
+        params = (tenant_id,)
+    rows = db.query(sql + " ORDER BY created_at DESC LIMIT 50", params)
     out = []
     for row in rows:
         out.append(_project_from_row(row))
@@ -1004,6 +1010,7 @@ def health(dataset_id: str) -> dict:
     row = _dataset_row(dataset_id)
     report = svc.get_health(dataset_id) or {}
     cleaning = report.get("cleaning", {})
+    pii_report = db.from_json(row["pii_report"], {}) or {}
 
     excluded = report.get("series_excluded", [])
     total = report.get("series_total", 0)
@@ -1034,6 +1041,14 @@ def health(dataset_id: str) -> dict:
             "action": _finding_action(finding_id),
         })
 
+    # Personal data goes first: it is the one finding that is about the file
+    # rather than the forecast, and the moment to act on it is now.
+    from ..schema import pii as pii_mod
+
+    pii_finding = pii_mod.as_finding(pii_report)
+    if pii_finding:
+        findings.insert(0, pii_finding)
+
     span = 0
     try:
         start = datetime.fromisoformat(str(report.get("history_start"))[:19])
@@ -1061,6 +1076,7 @@ def health(dataset_id: str) -> dict:
         "lifecycle": report.get("lifecycle", {}),
         "dead_stock": report.get("dead_stock", {}),
         "censoring": report.get("censoring", {}),
+        "personal_data": pii_report,
     }
 
 

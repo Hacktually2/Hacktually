@@ -9,9 +9,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 
+from .. import security
 from ..canonical import DecisionMode
 from ..db import database as db
 from ..decision import params as params_mod
@@ -27,6 +28,19 @@ router = APIRouter(prefix="/api/v1")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _guard(request: Request, dataset_id: str) -> None:
+    """Refuse another tenant's dataset. Called before any read or write.
+
+    Answers 404 rather than 403 on purpose: confirming that an id exists but
+    belongs to someone else is itself a disclosure.
+    """
+    try:
+        owner = svc.tenant_of_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+    security.assert_tenant(owner, security.tenant_of(request))
 
 
 class IngestRecords(BaseModel):
@@ -68,14 +82,16 @@ class AlertRequest(BaseModel):
 # ----------------------------------------------------------------- projects
 
 @router.get("/projects")
-def list_projects():
+def list_projects(request: Request):
     """Project chooser. A project is a dataset plus what was derived from it."""
-    return views.projects()
+    return views.projects(security.tenant_of(request))
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str):
+def get_project(request: Request, project_id: str):
     try:
+        dataset_id = project_id[4:] if project_id.startswith("prj-") else project_id
+        _guard(request, dataset_id)
         return views.project(project_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="project not found")
@@ -84,20 +100,26 @@ def get_project(project_id: str):
 # ---------------------------------------------------------------- ingestion
 
 @router.post("/ingest")
-async def ingest(file: UploadFile = File(...)):
+async def ingest(request: Request, file: UploadFile = File(...)):
     try:
         payload = await file.read()
-        return svc.ingest(file.filename or "upload.csv", payload)
+        return svc.ingest(
+            file.filename or "upload.csv",
+            payload,
+            tenant_id=security.tenant_of(request),
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/ingest/json")
-def ingest_json(body: IngestRecords):
+def ingest_json(request: Request, body: IngestRecords):
     if not body.records:
         raise HTTPException(status_code=400, detail="records cannot be empty")
     try:
-        return svc.ingest_records(body.source, body.records)
+        return svc.ingest_records(
+            body.source, body.records, tenant_id=security.tenant_of(request)
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -206,13 +228,38 @@ def get_health(dataset_id: str):
 
 
 @router.get("/datasets")
-def list_datasets():
-    rows = db.query(
-        """SELECT dataset_id, filename, created_at, preset_matched, health_score,
-                  mapping_confirmed, frequency, decision_mode
-           FROM datasets ORDER BY created_at DESC LIMIT 50"""
-    )
+def list_datasets(request: Request):
+    """Only this tenant's datasets. Filenames alone can be commercially sensitive."""
+    tenant = security.tenant_of(request)
+    sql = """SELECT dataset_id, filename, created_at, preset_matched, health_score,
+                    mapping_confirmed, frequency, decision_mode
+             FROM datasets"""
+    params: tuple = ()
+    if security.tenancy_enabled():
+        sql += " WHERE tenant_id IS ?"
+        params = (tenant,)
+    rows = db.query(sql + " ORDER BY created_at DESC LIMIT 50", params)
     return [dict(r) for r in rows]
+
+
+@router.delete("/datasets/{dataset_id}")
+def delete_dataset(request: Request, dataset_id: str):
+    """Erase a dataset: derived rows, and the uploaded files themselves.
+
+    Erasure that leaves the original CSV in data/uploads is not erasure.
+    """
+    _guard(request, dataset_id)
+    try:
+        return svc.purge(dataset_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="dataset not found")
+
+
+@router.get("/datasets/{dataset_id}/privacy")
+def get_privacy(request: Request, dataset_id: str):
+    """What personal data was found in the upload, and what leaves this service."""
+    _guard(request, dataset_id)
+    return svc.privacy_report(dataset_id)
 
 
 # ---------------------------------------------------------------- forecasting
@@ -408,7 +455,13 @@ def get_usage(dataset_id: str):
 
 
 @router.get("/export/{dataset_id}/{kind}")
-def export_csv(dataset_id: str, kind: str, delimiter: str = ";"):
+def export_csv(
+    request: Request,
+    dataset_id: str,
+    kind: str,
+    delimiter: str = ";",
+    location: str | None = None,
+):
     """Download results as CSV.
 
     Default delimiter is ';' because Excel on an Indonesian locale reads that,
@@ -422,8 +475,11 @@ def export_csv(dataset_id: str, kind: str, delimiter: str = ";"):
     if delimiter not in (",", ";", "\t"):
         raise HTTPException(status_code=422, detail="delimiter must be one of , ; \\t")
 
+    _guard(request, dataset_id)
     try:
-        body = export_service.EXPORTS[kind](dataset_id, delimiter=delimiter)
+        body = export_service.EXPORTS[kind](
+            dataset_id, delimiter=delimiter, location=location
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="dataset not found")
 

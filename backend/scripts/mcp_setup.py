@@ -90,7 +90,15 @@ def main() -> None:
     print("\n" + "=" * 68)
     print("MCP client config")
     print("=" * 68)
-    print(json.dumps(payload, indent=2))
+    # Redacted: this gets pasted into chats and shown on shared screens, and the
+    # GPU key is a live credential. The file written by --write carries the real
+    # values; the terminal never does.
+    shown = json.loads(json.dumps(payload))
+    env = shown["mcpServers"][SERVER_NAME].get("env", {})
+    for name in list(env):
+        if any(word in name.upper() for word in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+            env[name] = "***redacted — the written file has the real value***"
+    print(json.dumps(shown, indent=2))
 
     path = claude_desktop_config_path()
     print(f"\nClaude Desktop config file:\n  {path}")

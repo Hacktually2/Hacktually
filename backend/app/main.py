@@ -8,10 +8,11 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from .api.routes import router
+from . import security
 from .db import database as db
 from .integrations import notify
 from .forecasting.router import available_model_names, foundation_status
@@ -24,6 +25,14 @@ log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     db.init()
     notify.init()
+    warning = security.startup_warning()
+    if warning:
+        log.warning(warning)
+    else:
+        log.info(
+            "API key required; tenant isolation %s",
+            "on" if security.tenancy_enabled() else "off",
+        )
     # Load foundation models once at startup, never per request. Failure is
     # survivable: the router drops whatever did not load and the pipeline still
     # runs end to end on baselines plus the calendar wrapper.
@@ -42,13 +51,52 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS. Every call is server-to-server: the frontend proxies reads through a
+# Server Component or Server Action that has already checked branch access, and
+# this service has no authentication of its own. Allowing a browser origin would
+# mean the one control protecting the data is that nobody knows the address.
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    """One gate in front of everything, so no route can forget it.
+
+    Checks the shared key, then that every dataset named in the path belongs to
+    the tenant making the request. Both are no-ops until BACKEND_API_KEY is set.
+    """
+    path = request.url.path
+    if path in security.OPEN_PATHS:
+        return await call_next(request)
+
+    try:
+        security.check_key(request)
+        if security.tenancy_enabled():
+            claimed = security.tenant_of(request)
+            for dataset_id in security.dataset_ids_in_path(path):
+                security.assert_tenant(_owner_of_dataset(dataset_id), claimed)
+            for job_id in security.job_ids_in_path(path):
+                security.assert_tenant(_owner_of_job(job_id), claimed)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    return await call_next(request)
+
+
+def _owner_of_dataset(dataset_id: str) -> str | None:
+    row = db.query_one("SELECT tenant_id FROM datasets WHERE dataset_id = ?", (dataset_id,))
+    # An id that does not exist is left to the route, which answers 404 with a
+    # message. Refusing here would make a typo indistinguishable from a breach.
+    return row["tenant_id"] if row else None
+
+
+def _owner_of_job(job_id: str) -> str | None:
+    row = db.query_one(
+        """SELECT d.tenant_id FROM jobs j JOIN datasets d ON d.dataset_id = j.dataset_id
+           WHERE j.job_id = ?""",
+        (job_id,),
+    )
+    return row["tenant_id"] if row else None
+
 
 app.include_router(router)
 
@@ -57,6 +105,10 @@ app.include_router(router)
 def health():
     return {
         "status": "ok",
+        "auth": {
+            "api_key_required": security.auth_enabled(),
+            "tenant_isolation": security.tenancy_enabled(),
+        },
         "models_available": available_model_names(),
         "foundation_models": foundation_status(),
     }
