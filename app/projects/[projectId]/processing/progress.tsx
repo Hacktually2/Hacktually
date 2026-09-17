@@ -23,16 +23,19 @@ export function ProcessingProgress({
   reviewHref,
   projectId,
   jobId,
+  initialJob = null,
 }: {
   sequence: JobState[];
   reviewHref: string;
   projectId: string;
   /** Null when there is no live job to follow. */
   jobId: string | null;
+  /** The job as the server already read it, so the first paint is real. */
+  initialJob?: JobState | null;
 }) {
   const router = useRouter();
   const [index, setIndex] = useState(0);
-  const [liveJob, setLiveJob] = useState<JobState | null>(null);
+  const [liveJob, setLiveJob] = useState<JobState | null>(initialJob);
   const [pollError, setPollError] = useState<string | null>(null);
 
   const job = liveJob ?? sequence[index];

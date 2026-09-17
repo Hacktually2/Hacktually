@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getJobSequence, getProject } from "@/app/dummy-data";
+import { getJob, getJobSequence, getProject } from "@/app/dummy-data";
 import { requireForecastAccess } from "@/auth/session";
 import { PageHeader, Panel } from "@/components/ui/panel";
 import { ProcessingProgress } from "./progress";
@@ -21,6 +21,12 @@ export default async function ProcessingPage({
   const raw = query.job;
   const jobId = (Array.isArray(raw) ? raw[0] : raw) ?? null;
 
+  // Read the real job server-side so the first paint is already the backend's
+  // own steps. Without this the screen renders the fixture sequence and swaps
+  // to live data on the first client poll, which looks like the pipeline
+  // restarting.
+  const initial = jobId ? (await getJob(jobId)).data : null;
+
   return (
     <main className="layout-shell flex-1 py-10">
       <PageHeader
@@ -40,6 +46,7 @@ export default async function ProcessingPage({
             reviewHref={`/projects/${projectId}/dashboard`}
             projectId={projectId}
             jobId={jobId}
+            initialJob={initial}
           />
         </Panel>
 

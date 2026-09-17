@@ -12,6 +12,48 @@ Everything below was verified against the running service, not read off the cont
 
 ---
 
+## 0. Status after the 2026-09-18 backend
+
+The backend closed most of this report. **Nine of fifteen gaps are fixed**, and the
+frontend has been re-pointed at the new responses — every screen now renders live data with
+no fallback badge.
+
+| Fixed | Still open |
+| --- | --- |
+| **B1** history (to the exact contract — at `cutoff_index` the observed and predicted values meet) · **B2** sample values + unmapped columns + `resolved_by` · **B3** findings · **B4** four-band risk (`critical` reachable) · **B5** named inventory fields · **B7** `/projects` · **B8** job `steps[]` · **B9** `/overview` · **B10** `/demand` · **B14** `/params` · **M1** `mcp` declared | **B11** location scoping (⚠️ security) · **B12** activity log · **B13** merge dry run · **B15** scenario sim · **M2** alert dry run · **B6** partially: `category` lands, but `item_name` still equals `item_id` |
+
+Beyond the list, the backend also added `/datasets/{id}/hierarchy` (bottom-up rollup with a
+`coherent` flag) and `/branches/{dataset_id}` (per-branch health scored on *rates*, not raw
+counts, so a large branch is not flagged for being large). Neither is rendered in the
+frontend yet.
+
+### What the frontend had to change
+
+Because the responses now **are** the frontend's types, the integration got smaller:
+
+- `lib/backend/adapters.ts`: **439 → 108 lines.** Inverting the mapping table, banding
+  confidence scores, mapping three risk levels onto four, scraping `explanation[].label`
+  for values with no field — all deleted. What is left is the job `status` word and the
+  params merge.
+- `lib/backend/types.ts` now describes only the endpoints that still have their own shape.
+- `InventoryRow` went back to non-null. The 252 "—" cells on Supply Chain are **0**.
+- `getProject` resolves **both** ids, because the service mints `prj-ds_abc123` over dataset
+  `ds_abc123` and both appear in our links.
+
+### Two things that will bite whoever pulls next
+
+1. **A stale `data/app.db` breaks the core flow.** Confirm-mapping returns **500** with
+   `table series_profiles has no column named category`. The new code writes two columns
+   that `CREATE TABLE IF NOT EXISTS` never adds to an existing database, and there is no
+   migration. `rm data/app.db*` fixes it. Worth either an `ALTER TABLE` on init or a note in
+   the backend README.
+2. **Accepting both id forms opened a guard bypass**, now closed. `findBranchByForecastProject`,
+   `accessibleLocations` and `visibleForecastProjects` matched one id form only, so a
+   branch-claimed dashboard was guarded under `ds_x` and wide open under `prj-ds_x`. All
+   three now match both, with an assertion covering it.
+
+---
+
 ## 1. What this changed
 
 The frontend used to read entirely from `app/dummy-data/`. It now calls the real service
@@ -123,7 +165,7 @@ already checked branch access.
 Ordered by how much of the product each unblocks. **B1 is worth more than the rest
 combined.**
 
-### B1 — Historical actuals. No endpoint returns them. 🔴 BLOCKER
+### B1 — Historical actuals ✅ FIXED
 
 `GET /api/v1/forecasts/{id}/{series}` returns 30 future points and nothing else. No endpoint
 anywhere serves the cleaned history those points are drawn against.
@@ -151,7 +193,7 @@ the observed and predicted lines must meet there. The last historical point must
 `toForecastSeries` in `lib/backend/adapters.ts` is already written for this shape and
 currently returns `cutoff_index: -1` to mean "forecast only".
 
-### B2 — Mapping response carries no sample values
+### B2 — Mapping sample values ✅ FIXED
 
 `GET /api/v1/datasets/{id}/mapping` returns `{canonical, source_column, confidence, reason}`.
 The review screen shows sample values beside each column so a planner can *check* the guess
@@ -171,7 +213,7 @@ not, so after a reload there is no way to say "these 3 columns were ignored".
 `resolved_by` is currently guessed from whether a preset matched. Cosmetic, but it is
 displayed to the user as fact.
 
-### B3 — Findings are one string, the UI shows two levels
+### B3 — Findings ✅ FIXED (`detail` duplicates `title`, cosmetic)
 
 Backend sends `{level, text}`. The health panel renders a bold title and a detail paragraph,
 so the title carries the whole sentence and the detail is empty.
@@ -183,7 +225,7 @@ so the title carries the whole sentence and the detail is empty.
   "action": "Upload stock-on-hand to separate the two" }    // ADD, nullable
 ```
 
-### B4 — Risk vocabulary mismatch
+### B4 — Risk vocabulary ✅ FIXED
 
 Backend: `high | medium | low`. Frontend, per the frozen contract: `healthy | watch |
 at_risk | critical`. Adapter maps `high→at_risk`, `medium→watch`, `low→healthy`, so
@@ -192,7 +234,7 @@ at_risk | critical`. Adapter maps `high→at_risk`, `medium→watch`, `low→hea
 Either emit the four-value enum, or tell us what separates `at_risk` from `critical` so the
 engine can. Do not let two endpoints use different vocabularies.
 
-### B5 — Recommendations carry no inventory position
+### B5 — Inventory position ✅ FIXED
 
 A recommendation carries ids plus the reorder decomposition. The inventory table needs the
 position that produced it. Today the frontend scrapes three values out of
@@ -214,7 +256,7 @@ position that produced it. Today the frontend scrapes three values out of
 `coverage_days` specifically: the frontend will not compute it. Two screens disagreeing
 about days of cover is exactly the failure the integration doc forbids.
 
-### B6 — No display names anywhere
+### B6 — Display names ⚠️ PARTIAL — `category` lands; `item_name` still equals `item_id`
 
 `item_id: "SKU-0033"`, `location_id: "CAB-JKT-01"`, and no `item_name`, `location_name` or
 `category`. Every table shows codes. The uploaded CSV has `nama_produk`, `nama_cabang` and
@@ -228,7 +270,7 @@ about days of cover is exactly the failure the integration doc forbids.
 
 This also unblocks the category filter, which currently renders with no options.
 
-### B7 — No project concept
+### B7 — Project read model ✅ FIXED
 
 `GET /api/v1/datasets` returns `dataset_id, filename, created_at, preset_matched,
 health_score, mapping_confirmed, frequency, decision_mode`. The chooser also needs
@@ -236,7 +278,7 @@ health_score, mapping_confirmed, frequency, decision_mode`. The chooser also nee
 (blocked on B1). `name` falls back to the filename and `organisation` is supplied by this
 app's auth layer — that one is ours, not yours.
 
-### B8 — Job stages are free text
+### B8 — Job steps ✅ FIXED
 
 `stage` is a prose string (`"preparing data"`, `"simulating business value"`). The frontend
 regex-matches it onto six named steps. A wording change silently breaks the progress screen.
@@ -251,7 +293,7 @@ regex-matches it onto six named steps. A wording change silently breaks the prog
 Enum values the frontend already understands: `queued`, `profiling`, `cleaning`,
 `classifying`, `forecasting`, `validating`, `completed`, `failed`.
 
-### B9 — `GET /api/v1/overview/{dataset_id}` missing
+### B9 — `GET /api/v1/overview/{dataset_id}` ✅ FIXED
 
 The landing screen of the whole product. Needs KPI row, demand chart (B1), inventory
 posture and ranked priority actions. Full shape in `app/dummy-data/types.ts` →
@@ -261,17 +303,19 @@ every field populated correctly.
 Note `KpiMetric.value` is nullable with an `unavailable_reason` — **send `null` with a
 reason, never `0`**. `0` means measured zero.
 
-### B10 — `GET /api/v1/demand/{dataset_id}` missing
+### B10 — `GET /api/v1/demand/{dataset_id}` ✅ FIXED
 
 Chart (B1), accuracy, demand-pattern breakdown, sales by product and by location, forecast
 rows, filter options. Some of the parts exist: `GET /forecasts/{id}` has `model_mix` and
 per-series `wape`/`mase`/`bias`, and health has `demand_portfolio`. The chart does not, and
 without it the screen has no spine.
 
-### B11 — Nothing can be scoped to a branch 🔴 SECURITY
+### B11 — Nothing can be scoped to a branch ❌ STILL OPEN 🔴 SECURITY
 
 Recommendations and forecasts are returned for a whole dataset. There is no
-`?location_id=` on any read endpoint.
+`?location_id=` that has any effect. The parameter is now **accepted and ignored**: a call
+with `?location_id=CAB-JKT-01` still returns all 270 rows across all 8 branches, verified
+2026-09-18.
 
 This app grants managers access **per branch**. With one dataset per upload, a branch
 manager's dashboard is served every branch's rows and the frontend filters for display.
@@ -287,26 +331,26 @@ GET /api/v1/overview/{id}?location_id=CAB-JKT-01
 Filtering server-side closes it. Until then, do not demo a manager account against a
 dataset whose other branches are confidential.
 
-### B12 — No activity log
+### B12 — No activity log ❌ STILL OPEN
 
 `GET /api/v1/activity?dataset_id=` — who uploaded, who confirmed a mapping, when a forecast
 ran and what changed. The jobs table has some of it already. Shape: `ActivityEvent` in
 `app/dummy-data/types.ts`.
 
-### B13 — No append/merge endpoint
+### B13 — Merge dry run ⚠️ PARTIAL — `/append` exists for multi-branch upload, no dry run
 
 The Update Data screen needs a dry run before anything is written:
 `POST /api/v1/datasets/{id}/append?dry_run=true` → rows added/updated/unchanged/retained,
 new series, coverage before/after, and a sample of conflicting rows. Shape: `MergePreview`.
 
-### B14 — Planning parameters are engine constants
+### B14 — Planning parameters ✅ FIXED
 
 Lead time, service level and MOQ are hard-coded in `backend/app/decision/reorder.py`.
 `architecture.md` says these are entered per category with bulk apply and per-SKU override.
 Needs `GET/PUT /api/v1/datasets/{id}/parameters`, with a `source` per value
 (`dataset | default | user`) so a planner can see which numbers came from their own export.
 
-### B15 — No scenario simulation
+### B15 — No scenario simulation ❌ STILL OPEN
 
 `POST /api/v1/simulate/{dataset_id}` with lead-time / demand / service-level / MOQ
 multipliers and a capacity cap, returning the same engine run under different inputs. Shape:

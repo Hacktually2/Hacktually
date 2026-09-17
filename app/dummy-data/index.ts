@@ -13,20 +13,13 @@
  *              service is down, never the default.
  *   NOT BUILT  the backend has no such endpoint. The fixture is the only
  *              source, and the note names the endpoint that would replace it.
- *   PARTIAL    the endpoint exists but cannot fill every field. It is live,
- *              and the missing fields arrive as null.
  *
- * Every NOT BUILT and PARTIAL here is a numbered gap in migration-report.md.
+ * As of the 2026-09-18 backend almost everything is LIVE, and nothing is
+ * reshaped on the way through: those endpoints return the types below exactly.
+ * The remaining NOT BUILT entries are numbered gaps in migration-report.md.
  */
 import { backend } from "@/lib/backend/client";
-import {
-  toHealthReport,
-  toJobState,
-  toMappingResponse,
-  toProject,
-  toSupplyChainResponse,
-  toValueSimulation,
-} from "@/lib/backend/adapters";
+import { toJobState, toPlanningParameters } from "@/lib/backend/adapters";
 import { fromBackend, notBuilt, type Sourced } from "@/lib/backend/source";
 import { ACTIVITY } from "./activity";
 import { buildDemandResponse } from "./demand";
@@ -70,44 +63,53 @@ function settle(): Promise<void> | undefined {
 }
 
 /**
- * PARTIAL — GET /api/v1/datasets
+ * LIVE — GET /api/v1/projects
  *
- * The backend has no project concept, only datasets. A dataset carries enough
- * for a card to exist but not enough to fill one: no display name beyond the
- * filename, no organisation, no series count, no sparkline. Gap B7.
+ * A real project read model now, not a dataset list dressed up as one: name,
+ * organisation, series count, status and a sparkline all come from the service.
  *
- * Live datasets come first; the seeded fixture branches stay appended so the
- * demo network is always reachable even with the service down.
+ * The seeded fixture branches stay appended, because they are the demo network
+ * and exist by design rather than as a failed live read.
  */
-export async function getProjects(organisation = "PT ABC Distribution"): Promise<Sourced<Project[]>> {
+export async function getProjects(_organisation = "PT ABC Distribution"): Promise<Sourced<Project[]>> {
   await settle();
   const sourced = await fromBackend(
-    async () => {
-      const datasets = await backend.listDatasets();
-      return datasets.map((dataset) => toProject(dataset, organisation));
-    },
+    () => backend.listProjects(),
     () => [],
   );
-  // Fixtures are additive here rather than a replacement: they are the seeded
-  // branch network, which is demo data by design, not a failed live read.
   return { ...sourced, data: [...sourced.data, ...PROJECTS] };
 }
 
 /**
- * One project, and the difference between "no such thing" and "could not ask".
+ * One project, by either id it can be reached under.
  *
- * If the service answered and does not have this dataset, it does not exist and
- * the page 404s. If the service could not be reached, 404 would be a lie — the
- * dataset was there a minute ago — so the screens render in fallback mode
- * against a placeholder and their badges explain why the numbers are demo data.
- * Without this, one blip turns every live dashboard into "page not found".
+ * The service mints its own project id (`prj-ds_abc123`) distinct from the
+ * dataset id (`ds_abc123`), and both appear in links: the project chooser uses
+ * the project id, while a branch in the auth layer records the dataset id it
+ * was split from. Rather than rewrite every stored id, this resolves both — ask
+ * the service directly, then fall back to matching on `dataset_id`.
+ *
+ * It also keeps the distinction between "no such thing" and "could not ask".
+ * If the service answered and does not have it, the page 404s. If the service
+ * could not be reached, 404 would be a lie — the dataset was there a minute
+ * ago — so the screens render in fallback mode against a placeholder and their
+ * badges explain why the numbers are demo data. Without this, one blip turns
+ * every live dashboard into "page not found".
  */
 export async function getProject(projectId: string): Promise<Project | undefined> {
   const fixture = PROJECTS.find((p) => p.project_id === projectId);
   if (fixture) return fixture;
 
+  const direct = await fromBackend(
+    () => backend.getProject(projectId),
+    () => null,
+  );
+  if (direct.data) return direct.data;
+
   const { data, live } = await getProjects();
-  const found = data.find((p) => p.project_id === projectId);
+  const found = data.find(
+    (p) => p.project_id === projectId || p.dataset_id === projectId,
+  );
   if (found) return found;
   if (live) return undefined;
 
@@ -129,25 +131,18 @@ export async function getProject(projectId: string): Promise<Project | undefined
   };
 }
 
-/** LIVE — GET /api/v1/datasets/{id}/mapping. Missing sample values, gap B2. */
+/** LIVE — GET /api/v1/datasets/{id}/mapping. Sample values and unmapped columns included. */
 export async function getMapping(datasetId: string): Promise<Sourced<MappingResponse>> {
   await settle();
-  return fromBackend(
-    async () => toMappingResponse(await backend.getMapping(datasetId)),
-    () => MAPPING,
-  );
+  return fromBackend(() => backend.getMapping(datasetId), () => MAPPING);
 }
 
 /** LIVE — GET /api/v1/datasets/{id}/health. */
 export async function getHealth(datasetId: string): Promise<Sourced<HealthReport>> {
   await settle();
-  return fromBackend(
-    async () => toHealthReport(await backend.getHealth(datasetId), datasetId),
-    () => HEALTH,
-  );
+  return fromBackend(() => backend.getHealth(datasetId), () => HEALTH);
 }
 
-/** LIVE — GET /api/v1/jobs/{job_id}. Steps are inferred from `stage`, gap B8. */
 export async function getJob(jobId: string): Promise<Sourced<JobState>> {
   return fromBackend(
     async () => toJobState(await backend.getJob(jobId)),
@@ -165,10 +160,10 @@ export async function getJobSequence(): Promise<JobState[]> {
   return JOB_SEQUENCE;
 }
 
-/** NOT BUILT — gap B9. No endpoint composes the situational overview. */
-export async function getOverview(_datasetId: string): Promise<Sourced<OverviewResponse>> {
+/** LIVE — GET /api/v1/overview/{dataset_id}. */
+export async function getOverview(datasetId: string): Promise<Sourced<OverviewResponse>> {
   await settle();
-  return notBuilt(OVERVIEW, "GET /api/v1/overview/{dataset_id}");
+  return fromBackend(() => backend.getOverview(datasetId), () => OVERVIEW);
 }
 
 /**
@@ -178,44 +173,51 @@ export async function getOverview(_datasetId: string): Promise<Sourced<OverviewR
  * component. The real endpoint does the same work against SQLite.
  */
 export async function getDemand(
-  _datasetId: string,
+  datasetId: string,
   filters: Partial<DemandResponse["active_filters"]> = {}
 ): Promise<Sourced<DemandResponse>> {
   await settle();
-  // NOT BUILT — gap B10. Even the pieces that exist (model mix, per-series
-  // accuracy) cannot make this screen without history: every chart on it draws
-  // actuals against forecast, and gap B1 means there are no actuals to draw.
-  return notBuilt(buildDemandResponse(filters), "GET /api/v1/demand/{dataset_id}");
+  // LIVE. Filtering is the backend's job and it does it — the query goes
+  // straight through, and the response says which filters it applied.
+  return fromBackend(
+    () => backend.getDemand(datasetId, filters as Record<string, string | undefined>),
+    () => buildDemandResponse(filters)
+  );
 }
 
 /**
  * LIVE — GET /api/v1/recommendations/{dataset_id}
  *
- * The real decision engine's output. Rows are genuine; several columns arrive
- * null because a recommendation carries ids and a reorder decomposition but no
- * item names, categories, coverage or lead times. Gaps B5 and B6.
+ * Returns the inventory workspace's own shape, with every column populated:
+ * coverage, lead time, MOQ, category and the reorder decomposition all come
+ * from the decision engine now.
  *
- * Filtering happens here because the endpoint only accepts `risk`, so location
- * and category narrowing is applied to the rows after they arrive. That is
- * display filtering, not a security boundary — see gap B11 for why that matters
- * for branch managers.
+ * `location_id` is passed but the service still ignores it, so location and
+ * category narrowing is applied here. That is display filtering, not a security
+ * boundary — see gap B11, still open.
  */
 export async function getSupplyChain(
   datasetId: string,
   filters: SupplyChainFilters = {},
-  mode: "ritel" | "manufaktur" = "ritel"
+  _mode: "ritel" | "manufaktur" = "ritel"
 ): Promise<Sourced<SupplyChainResponse>> {
   await settle();
   return fromBackend(
     async () => {
-      const { recommendations } = await backend.getRecommendations(datasetId, 200);
-      const response = toSupplyChainResponse(datasetId, recommendations, mode);
+      const response = await backend.getRecommendations(
+        datasetId,
+        500,
+        filters.location && filters.location !== "all" ? filters.location : undefined
+      );
       const rows = response.rows.filter(
         (row) =>
           (!filters.risk || filters.risk === "all" || row.risk === filters.risk) &&
           (!filters.location ||
             filters.location === "all" ||
-            row.location_id === filters.location)
+            row.location_id === filters.location) &&
+          (!filters.category ||
+            filters.category === "all" ||
+            row.category === filters.category)
       );
       return { ...response, rows };
     },
@@ -287,12 +289,18 @@ export async function getSeriesDetail(
 
 /** NEEDS-ENDPOINT: GET /api/v1/datasets/{id}/parameters */
 export async function getPlanningParameters(
-  _datasetId: string
+  datasetId: string,
+  horizonDays = 30
 ): Promise<Sourced<PlanningParameters>> {
   await settle();
-  // NOT BUILT — gap B14. Lead times and service levels are engine constants in
-  // `backend/app/decision/reorder.py`, not stored per category or editable.
-  return notBuilt(PLANNING_PARAMETERS, "GET/PUT /api/v1/datasets/{id}/parameters");
+  // LIVE — GET /api/v1/datasets/{id}/params. The one read model still in its
+  // own shape, so `toPlanningParameters` merges what is set with what the
+  // dataset suggests and records which is which.
+  return fromBackend(
+    async () =>
+      toPlanningParameters(await backend.getParams(datasetId), datasetId, horizonDays),
+    () => PLANNING_PARAMETERS
+  );
 }
 
 /** LIVE — GET /api/v1/value/{dataset_id}. 404s until a forecast has run. */
@@ -300,10 +308,7 @@ export async function getValueSimulation(
   datasetId: string
 ): Promise<Sourced<ValueSimulation>> {
   await settle();
-  return fromBackend(
-    async () => toValueSimulation(await backend.getValue(datasetId), datasetId),
-    () => VALUE_SIMULATION
-  );
+  return fromBackend(() => backend.getValue(datasetId), () => VALUE_SIMULATION);
 }
 
 export { DEFAULT_PROJECT_ID };

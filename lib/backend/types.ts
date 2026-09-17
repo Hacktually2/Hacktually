@@ -1,14 +1,15 @@
 /**
- * What the forecasting backend ACTUALLY returns.
+ * What the forecasting backend returns that is NOT already a frontend type.
  *
- * Transcribed from live responses captured against `backend/` on 2026-09-17,
- * not from the contract in architecture.md — where the two disagree, this file
- * follows the wire. `app/dummy-data/types.ts` describes what the frontend
- * needs; this describes what it gets; `adapters.ts` is the distance between
- * them, and every gap in that distance is an item in migration-report.md.
+ * This file used to describe every response, because the wire shapes and the
+ * screens' types were different things and `adapters.ts` was the distance
+ * between them. That distance is now mostly gone: as of the 2026-09-18 backend,
+ * `/projects`, `/overview`, `/demand`, `/recommendations`, `/mapping`,
+ * `/health` and `/value` return the types in `app/dummy-data/types.ts` exactly,
+ * so the client returns them directly and there is nothing left to translate.
  *
- * Keep this file honest. If the backend changes shape, change it here first and
- * let TypeScript find the call sites.
+ * What remains here is the handful of endpoints that still have their own shape.
+ * If one of these grows into a frontend type too, delete it from here.
  */
 
 /* ------------------------------------------------------------------ health */
@@ -24,80 +25,23 @@ export interface BackendHealthCheck {
 
 /* --------------------------------------------------------------- ingestion */
 
-/** One canonical field and the source column the mapper chose for it. */
-export interface BackendMappingField {
-  canonical: string;
-  source_column: string | null;
-  confidence: number;
-  reason: string;
-}
-
 export interface BackendIngestResult {
   dataset_id: string;
   status: string;
   rows: number;
   columns: string[];
   preset_matched: string | null;
-  mapping: { fields: BackendMappingField[] };
+  /** The detected mapping, in the review screen's own shape. */
+  mapping: { fields: unknown[] };
 }
 
-export interface BackendMappingResponse {
-  dataset_id: string;
-  filename: string;
-  preset_matched: string | null;
-  confirmed: boolean;
-  mapping: { fields: BackendMappingField[] };
-  /** Present on the confirm response only. */
-  health?: BackendHealth;
-}
-
-/* ----------------------------------------------------------------- health */
-
-export interface BackendFinding {
-  level: "ok" | "warn" | "error";
-  text: string;
-}
-
-export interface BackendCleaning {
-  rows_received: number;
-  rows_after_clean: number;
-  duplicates_found: number;
-  missing_timestamps: number;
-  unparseable_timestamps: number;
-  negative_values: number;
-  null_targets: number;
-  reindexed_gaps: number;
-  frequency: string;
-  series_total: number;
-  notes: string[];
-}
-
-export interface BackendHealth {
-  health_score: number;
-  frequency: string;
-  /** "2024-01-01 00:00:00" — a naive datetime, not ISO-8601 with an offset. */
-  history_start: string | null;
-  history_end: string | null;
-  periods: number;
-  series_total: number;
-  series_forecastable: number;
-  series_excluded: { series_id: string; reason: string; fix?: string }[];
-  series_excluded_count: number;
-  findings: BackendFinding[];
-  demand_portfolio: Record<string, number>;
-  censored_series?: number;
-  cleaning: BackendCleaning;
-}
-
-/* -------------------------------------------------------------- datasets */
-
+/** One dataset as `/datasets` lists it. `/projects` is the richer read model. */
 export interface BackendDataset {
   dataset_id: string;
   filename: string;
   created_at: string;
   preset_matched: string | null;
   health_score: number | null;
-  /** SQLite integer boolean. */
   mapping_confirmed: number;
   frequency: string | null;
   decision_mode: string | null;
@@ -105,16 +49,26 @@ export interface BackendDataset {
 
 /* ------------------------------------------------------------------- jobs */
 
+/**
+ * The job now carries the named steps the processing screen renders, so the
+ * old regex-matching on a free-text `stage` is gone (gap B8, fixed).
+ *
+ * `status` is the one thing still out of step: the backend reports `running`,
+ * which is not one of the frontend's `JobStatus` values.
+ */
 export interface BackendJob {
   job_id: string;
   dataset_id: string;
   status: "running" | "completed" | "failed";
   progress: number;
-  /** Free text, e.g. "simulating business value". Not an enum. */
-  stage: string | null;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
+  steps: {
+    key: string;
+    label: string;
+    state: "done" | "active" | "pending" | "failed";
+    detail: string | null;
+  }[];
+  message: string | null;
+  error?: string | null;
 }
 
 /* -------------------------------------------------------------- forecasts */
@@ -140,7 +94,6 @@ export interface BackendForecastList {
 }
 
 export interface BackendForecastPoint {
-  /** Naive datetime, no offset. */
   timestamp: string;
   forecast: number;
   lower: number;
@@ -150,72 +103,70 @@ export interface BackendForecastPoint {
 
 export interface BackendSeriesForecast {
   series_id: string;
-  /**
-   * FUTURE POINTS ONLY. There is no history here and no other endpoint serves
-   * it, which is why every history-vs-forecast chart in the product still runs
-   * on fixtures. See migration-report.md, gap B1.
-   */
   forecast: BackendForecastPoint[];
   selection: Record<string, unknown> | null;
   candidates: Record<string, { wape: number; mase: number; bias: number }>;
   profile: Record<string, unknown> | null;
 }
 
-/* ------------------------------------------------------------ decisions */
+/* ------------------------------------------------------------- parameters */
 
-export interface BackendRecommendation {
+/**
+ * Planning parameters, which do NOT match `PlanningParameters` yet.
+ *
+ * `current` is what somebody has set, keyed by scope. `suggested` is what the
+ * dataset can tell us — note `lead_time_days` and `moq` come back null, because
+ * they are commercial terms that are not in a sales export. That null is the
+ * point: the screen asks for them rather than inventing a default.
+ */
+export interface BackendParams {
   dataset_id: string;
-  series_id: string;
-  mode: string;
-  /** Three bands. The frontend vocabulary has four. */
-  stockout_risk: "high" | "medium" | "low";
-  days_until_stockout: number | null;
-  recommended_qty: number;
-  raw_material_qty: number | null;
-  item_id: string | null;
-  location_id: string | null;
-  demand_class: string | null;
-  model_name: string | null;
-  /** Fraction, e.g. 0.4185 — not a percentage. */
-  wape: number | null;
-  mase: number | null;
-  reason: string | null;
-  /** Signed contributions that sum to recommended_qty. */
-  explanation: { label: string; value: number }[];
-}
-
-export interface BackendValue {
-  baseline: BackendValueSide;
-  proposed: BackendValueSide;
-  delta: {
-    fill_rate_points: number;
-    stockout_events_avoided: number;
-    lost_sales_units_avoided: number;
-    margin_recovered: number;
-    holding_cost_change: number;
-    total_benefit: number;
-    working_capital_freed: number;
-    working_capital_note: string;
+  current: {
+    default: Record<string, number>;
+    category: Record<string, Record<string, number>>;
+    series: Record<string, Record<string, number>>;
   };
-  scope: { series: number; periods: number };
+  suggested: {
+    dataset_id: string;
+    categories: {
+      category: string;
+      series: number;
+      avg_daily_demand: number | null;
+      lead_time_days: number | null;
+      moq: number | null;
+    }[];
+  };
 }
 
-export interface BackendValueSide {
-  label: string;
-  /** Fraction, e.g. 0.8863. */
-  fill_rate: number;
-  stockout_events: number;
-  avg_inventory_units: number;
-  avg_inventory_value: number;
-  lost_sales_units: number;
-  lost_margin: number;
-  holding_cost: number;
-  total_cost: number;
-}
+/* ---------------------------------------------------------------- branches */
 
-export interface BackendUsage {
-  series_forecast: number;
-  forecast_points: number;
-  model_invocations: number;
-  pipeline_runs: number;
+/**
+ * Per-branch health. New in this backend and not yet rendered anywhere.
+ *
+ * Scored on rates rather than raw counts, so a big branch is not flagged just
+ * for being big — which is the right way to answer "which branch is doing
+ * worst".
+ */
+export interface BackendBranches {
+  dataset_id: string;
+  branches: {
+    location_id: string;
+    series_count: number;
+    demand_forecast: number;
+    demand_share_percent: number;
+    demand_trend_percent: number;
+    attention_count: number;
+    attention_rate_percent: number;
+    dormant_series: number;
+    dormant_rate_percent: number;
+    dormant_units_held: number;
+    median_wape_percent: number | null;
+    units_to_order: number;
+    units_available_to_transfer: number;
+    units_coverable_by_transfer: number;
+    flags: string[];
+  }[];
+  network: Record<string, unknown>;
+  transfers: unknown[];
+  note: string | null;
 }
