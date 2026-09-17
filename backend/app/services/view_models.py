@@ -55,13 +55,18 @@ DEMAND_CLASS_META = {
     "lumpy": ("Lumpy", "Long gaps and unpredictable size — hardest to forecast."),
 }
 
+# Order matters: these render in array order, and the index a status maps to
+# below is what marks a step done. Backtesting genuinely runs BEFORE the final
+# forecast — candidates compete, a winner is picked, then the winner forecasts.
+# Listing "Generating forecasts" first made the indicator walk backwards from
+# step 5 to step 4 halfway through every run.
 JOB_STEPS = [
     ("upload", "File received"),
     ("profile", "Reading the schema"),
     ("clean", "Cleaning and validating"),
     ("classify", "Characterising demand"),
-    ("forecast", "Generating forecasts"),
     ("validate", "Backtesting and selecting"),
+    ("forecast", "Generating forecasts"),
     ("decide", "Building recommendations"),
 ]
 
@@ -74,6 +79,24 @@ STAGE_TO_STATUS = {
     "building recommendations": "forecasting",
     "simulating business value": "validating",
     "done": "completed",
+}
+
+# How far through JOB_STEPS each stage is, kept separate from the status above.
+# They are not the same question. `status` is the contract enum the frontend
+# types against and has no value for "deciding", so two late stages have to
+# share one word; the step indicator has no such constraint and must only ever
+# move forward. Deriving the index from the status instead made the tail of
+# every run jump backwards — value simulation reports "validating", which sat
+# earlier in the list than the recommendations step that had already finished.
+STAGE_TO_STEP = {
+    "queued": 0,
+    "preparing data": 2,
+    "backtesting candidate models": 4,
+    "backtesting": 4,
+    "selecting models and forecasting": 5,
+    "building recommendations": 6,
+    "simulating business value": 6,
+    "done": len(JOB_STEPS),
 }
 
 
@@ -1105,11 +1128,14 @@ def job(job_id: str) -> dict:
     elif row["status"] == "failed":
         status = "failed"
 
-    # Step keys stay constant across polls so rows never reorder mid-run.
-    reached = {
-        "queued": 0, "profiling": 1, "cleaning": 2, "classifying": 3,
-        "forecasting": 4, "validating": 5, "completed": 7, "failed": 4,
-    }.get(status, 1)
+    # Step keys stay constant across polls so rows never reorder mid-run, and
+    # the index comes from the stage the pipeline reported rather than from the
+    # status word, so it only ever advances.
+    reached = STAGE_TO_STEP.get(stage, 1)
+    if row["status"] == "completed":
+        reached = len(JOB_STEPS)
+    elif row["status"] == "failed":
+        reached = min(reached, len(JOB_STEPS) - 1)
 
     steps = []
     for index, (key, label) in enumerate(JOB_STEPS):

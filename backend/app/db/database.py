@@ -171,6 +171,10 @@ MIGRATIONS = (
     ("business_params", "cost_over", "REAL"),
     ("datasets", "tenant_id", "TEXT"),
     ("datasets", "pii_report", "TEXT"),
+    # How the last run was validated: full backtest, or sampled. Persisted
+    # rather than derived, because whether a metric was measured or estimated
+    # has to survive the request that produced it.
+    ("datasets", "backtest_report", "TEXT"),
 )
 
 
