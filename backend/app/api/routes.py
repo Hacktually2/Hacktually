@@ -285,22 +285,55 @@ def start_forecast(dataset_id: str, body: ForecastRequest, background: Backgroun
     )
 
     def run() -> None:
+        # Both terminal writes are conditional on the job still being `running`.
+        # Without that, a cancel that lands while the last batch finishes is
+        # overwritten by `completed` a moment later, and the screen that just
+        # said "cancelled" changes its mind.
         try:
             svc.run_forecast(
                 dataset_id, body.horizon, job_id, body.use_calendar, body.mock
             )
             db.execute(
-                "UPDATE jobs SET status = 'completed', progress = 100, updated_at = ? WHERE job_id = ?",
+                """UPDATE jobs SET status = 'completed', progress = 100, updated_at = ?
+                   WHERE job_id = ? AND status = 'running'""",
                 (_now(), job_id),
             )
+        except svc.JobCancelled:
+            # The row already says cancelled. Nothing to record, and this is not
+            # a failure — somebody asked for it.
+            pass
         except Exception as exc:  # noqa: BLE001 — surface the error in job status
             db.execute(
-                "UPDATE jobs SET status = 'failed', error = ?, updated_at = ? WHERE job_id = ?",
+                """UPDATE jobs SET status = 'failed', error = ?, updated_at = ?
+                   WHERE job_id = ? AND status = 'running'""",
                 (str(exc), _now(), job_id),
             )
 
     background.add_task(run)
     return {"job_id": job_id, "status": "running"}
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    """Ask a running forecast to stop.
+
+    Marks the row and returns; the run itself unwinds at its next progress
+    report. Idempotent, and a no-op on a job that already finished — cancelling
+    something that completed a second ago is not an error, it just did not
+    happen.
+    """
+    row = db.query_one("SELECT status FROM jobs WHERE job_id = ?", (job_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="job not found")
+    if row["status"] != "running":
+        return {"job_id": job_id, "status": row["status"], "cancelled": False}
+
+    db.execute(
+        """UPDATE jobs SET status = 'cancelled', error = ?, updated_at = ?
+           WHERE job_id = ? AND status = 'running'""",
+        ("Cancelled from the dashboard.", _now(), job_id),
+    )
+    return {"job_id": job_id, "status": "cancelled", "cancelled": True}
 
 
 @router.get("/jobs/{job_id}")

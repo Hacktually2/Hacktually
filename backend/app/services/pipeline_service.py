@@ -6,8 +6,10 @@ never lives in an endpoint or an MCP tool.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,16 @@ MAX_SERIES_FOR_VALUE_SIM = 30
 # mid-market buyers actually place orders, and it is what keeps the value
 # simulation to a few hundred GPU calls instead of tens of thousands.
 REVIEW_PERIOD = 7
+
+
+class JobCancelled(Exception):
+    """Raised inside a forecast whose job row has been marked cancelled.
+
+    A run is a FastAPI background task, not a thread anyone holds a handle to,
+    so there is nothing to kill from outside. Cancellation is cooperative
+    instead: the route marks the row, and the next progress report — which the
+    slow parts of the pipeline make regularly — notices and unwinds.
+    """
 
 
 def _now() -> str:
@@ -576,12 +588,90 @@ def confirm_mapping(
 
 # ---------------------------------------------------------------- preparation
 
+# Reading a dataset is expensive and it is done on every screen: the chart,
+# the demand comparison and the per-branch trend each call `_load_canonical`,
+# which re-reads the raw upload off disk, re-applies the column mapping and
+# re-runs cleaning. On a 500k-row network file that is seconds of work, repeated
+# per request, to produce a frame that cannot have changed — nothing here
+# depends on anything but the files and their mappings.
+#
+# Two entries, because a cleaned frame of that size is tens of megabytes and
+# nobody is reading three datasets at once.
+_CANONICAL_CACHE: dict[str, tuple[tuple, tuple]] = {}
+_CANONICAL_CACHE_MAX = 2
+_canonical_lock = threading.Lock()
+
+
+def _canonical_fingerprint(dataset_id: str) -> tuple:
+    """Everything `_load_canonical` reads, other than the file bytes themselves.
+
+    Confirming a mapping rewrites `schema_mapping`; appending a branch adds a
+    source row. Either changes this tuple, so the cache cannot outlive the
+    answer it was computed for.
+
+    The one thing it does not catch is a raw file overwritten in place under an
+    unchanged path — uploads never do that, they write a new path.
+    """
+    row = db.query_one(
+        "SELECT raw_path, schema_mapping FROM datasets WHERE dataset_id = ?",
+        (dataset_id,),
+    )
+    sources = db.query(
+        """SELECT raw_path, schema_mapping, uploaded_at FROM dataset_sources
+           WHERE dataset_id = ? ORDER BY uploaded_at""",
+        (dataset_id,),
+    )
+    return (
+        (row["raw_path"], row["schema_mapping"]) if row else None,
+        tuple((r["raw_path"], r["schema_mapping"], r["uploaded_at"]) for r in sources),
+    )
+
+
+def invalidate_canonical(dataset_id: str | None = None) -> None:
+    """Drop cached frames. Called where the fingerprint cannot see a change."""
+    with _canonical_lock:
+        if dataset_id is None:
+            _CANONICAL_CACHE.clear()
+        else:
+            _CANONICAL_CACHE.pop(dataset_id, None)
+
+
 def _load_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, CleaningReport]:
     """Union every source, each canonicalized with its own mapping, then clean once.
 
     Cleaning has to happen after the union, not per source: frequency detection
     and duplicate aggregation only make sense across the whole picture.
+
+    Memoized on the sources and their mappings — see `_canonical_fingerprint`.
     """
+    fingerprint = _canonical_fingerprint(dataset_id)
+    with _canonical_lock:
+        cached = _CANONICAL_CACHE.get(dataset_id)
+    if cached and cached[0] == fingerprint:
+        return _detach(cached[1])
+
+    result = _build_canonical(dataset_id)
+    with _canonical_lock:
+        if len(_CANONICAL_CACHE) >= _CANONICAL_CACHE_MAX:
+            _CANONICAL_CACHE.pop(next(iter(_CANONICAL_CACHE)))
+        _CANONICAL_CACHE[dataset_id] = (fingerprint, result)
+    return _detach(result)
+
+
+def _detach(result: tuple) -> tuple[pl.DataFrame, Frequency, dict, CleaningReport]:
+    """Hand back a copy nobody can write through into the cache.
+
+    The frame is cloned because callers build on it — `prepare` attaches
+    censoring flags, `run_forecast` slices it — and Polars shares the underlying
+    buffers, so that is cheap. The report and the health dict are copied because
+    `prepare` re-runs `build_report` against the same report object, and a
+    mutation there would otherwise accumulate into every later reader's answer.
+    """
+    canonical, frequency, health, report = result
+    return canonical.clone(), frequency, copy.deepcopy(health), copy.deepcopy(report)
+
+
+def _build_canonical(dataset_id: str) -> tuple[pl.DataFrame, Frequency, dict, CleaningReport]:
     row = db.query_one("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
     if not row:
         raise KeyError(dataset_id)
@@ -788,11 +878,18 @@ def run_forecast(
     either way.
     """
     def progress(pct: int, stage: str) -> None:
-        if job_id:
-            db.execute(
-                "UPDATE jobs SET progress = ?, stage = ?, updated_at = ? WHERE job_id = ?",
-                (pct, stage, _now(), job_id),
-            )
+        if not job_id:
+            return
+        # The one place a running forecast can be interrupted. Backtesting
+        # reports here per batch, which is where a wide network spends its
+        # minutes, so a cancel lands within a batch rather than at the end.
+        row = db.query_one("SELECT status FROM jobs WHERE job_id = ?", (job_id,))
+        if row and row["status"] == "cancelled":
+            raise JobCancelled(job_id)
+        db.execute(
+            "UPDATE jobs SET progress = ?, stage = ?, updated_at = ? WHERE job_id = ?",
+            (pct, stage, _now(), job_id),
+        )
 
     progress(5, "preparing data")
     canonical, frequency, _, _ = _load_canonical(dataset_id)

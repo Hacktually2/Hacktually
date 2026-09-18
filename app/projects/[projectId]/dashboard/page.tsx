@@ -24,6 +24,19 @@ const RISK_FILL = {
   healthy: "bg-status-healthy",
 } as const;
 
+/**
+ * Keeps the active branch on a link out of this page.
+ *
+ * An owner who clicked one kota on the network map and then clicked
+ * "Investigate demand" was silently handed the whole network's demand under
+ * that kota's heading. Nothing errored; the number was just a different
+ * question's answer.
+ */
+function withScope(href: string, branch: string | null): string {
+  if (!branch) return href;
+  return `${href}${href.includes("?") ? "&" : "?"}branch=${encodeURIComponent(branch)}`;
+}
+
 function greeting(): string {
   const hour = Number(
     new Date().toLocaleString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Asia/Jakarta" })
@@ -64,6 +77,7 @@ export default async function OverviewPage({
           options={scope.options}
           active={scope.location}
           search={query}
+          restricted={scope.restricted}
         />
         <DataSource note={overviewNote} className="mt-4 max-w-2xl" />
       </div>
@@ -88,7 +102,7 @@ export default async function OverviewPage({
           description="Aggregate daily demand across all forecastable series."
           action={
             <Link
-              href={`/projects/${projectId}/dashboard/demand`}
+              href={withScope(`/projects/${projectId}/dashboard/demand`, scope.location)}
               className="flex items-center gap-1 text-body-sm font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
             >
               Investigate demand
@@ -102,10 +116,14 @@ export default async function OverviewPage({
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1.25fr] lg:items-start">
         <div className="animate-enter [--enter-delay:320ms]">
-          <InventoryPanel posture={overview.inventory} projectId={projectId} />
+          <InventoryPanel posture={overview.inventory} projectId={projectId} branch={scope.location} />
         </div>
         <div className="animate-enter [--enter-delay:380ms]">
-          <PriorityPanel actions={overview.priority_actions} projectId={projectId} />
+          <PriorityPanel
+            actions={overview.priority_actions}
+            projectId={projectId}
+            branch={scope.location}
+          />
         </div>
       </div>
     </main>
@@ -115,9 +133,12 @@ export default async function OverviewPage({
 function InventoryPanel({
   posture,
   projectId,
+  branch,
 }: {
   posture: InventoryPosture;
   projectId: string;
+  /** Active branch scope, or null for the whole network. */
+  branch: string | null;
 }) {
   return (
     <Panel
@@ -125,7 +146,7 @@ function InventoryPanel({
       description="How stock stands against expected demand."
       footer={
         <Link
-          href={`/projects/${projectId}/dashboard/supply-chain`}
+          href={withScope(`/projects/${projectId}/dashboard/supply-chain`, branch)}
           className="flex items-center gap-1 font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
         >
           Open supply chain
@@ -193,9 +214,12 @@ function InventoryPanel({
 function PriorityPanel({
   actions,
   projectId,
+  branch,
 }: {
   actions: PriorityAction[];
   projectId: string;
+  /** Active branch scope, or null for the whole network. */
+  branch: string | null;
 }) {
   return (
     <Panel
@@ -204,7 +228,7 @@ function PriorityPanel({
       padded={false}
       footer={
         <Link
-          href={`/projects/${projectId}/dashboard/supply-chain?risk=attention`}
+          href={withScope(`/projects/${projectId}/dashboard/supply-chain?risk=attention`, branch)}
           className="flex items-center gap-1 font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
         >
           See all items needing attention
@@ -223,9 +247,12 @@ function PriorityPanel({
               // is the frontend's to decide; the ranking above it is not.
               href={
                 action.href ??
-                `/projects/${projectId}/dashboard/supply-chain?series=${encodeURIComponent(
-                  action.series_id
-                )}`
+                withScope(
+                  `/projects/${projectId}/dashboard/supply-chain?series=${encodeURIComponent(
+                    action.series_id
+                  )}`,
+                  branch
+                )
               }
               className="group flex items-start gap-4 px-5 py-4 transition-colors duration-(--duration-fast) hover:bg-brand-pale-soft"
             >

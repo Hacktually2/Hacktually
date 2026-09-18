@@ -203,6 +203,13 @@ export const backend = {
 
   getJob: (jobId: string) => request<BackendJob>(`/api/v1/jobs/${jobId}`),
 
+  /** Asks a running forecast to stop. A finished job reports `cancelled: false`. */
+  cancelJob: (jobId: string) =>
+    request<{ job_id: string; status: string; cancelled: boolean }>(
+      `/api/v1/jobs/${jobId}/cancel`,
+      { method: "POST" },
+    ),
+
   /* ---- dashboards ------------------------------------------------------- */
 
   /**

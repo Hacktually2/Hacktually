@@ -112,6 +112,7 @@ export default async function DemandPage({
           options={branch.options}
           active={branch.location}
           search={query}
+          restricted={branch.restricted}
         />
         <DataSource note={demandNote} className="mt-4 max-w-2xl" />
       </div>

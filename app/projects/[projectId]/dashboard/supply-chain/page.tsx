@@ -143,6 +143,7 @@ export default async function SupplyChainPage({
           options={scope.options}
           active={scope.location}
           search={query}
+          restricted={scope.restricted}
         />
         <FilterBar filters={filterSpecs} />
       </div>
