@@ -26,12 +26,17 @@ export function toJobState(job: BackendJob): JobState {
   const active = job.steps.find((step) => step.state === "active");
   const failed = job.steps.find((step) => step.state === "failed");
 
+  // `cancelled` has to be named here. A cancelled job has no active step, so
+  // falling through would read the step keys and call it "queued" — a stopped
+  // run described as one about to start.
   const status: JobStatus =
     job.status === "completed"
       ? "completed"
       : job.status === "failed"
         ? "failed"
-        : ((active?.key ?? "queued") as JobStatus);
+        : job.status === "cancelled"
+          ? "cancelled"
+          : ((active?.key ?? "queued") as JobStatus);
 
   return {
     job_id: job.job_id,

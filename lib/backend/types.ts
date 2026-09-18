@@ -59,7 +59,7 @@ export interface BackendDataset {
 export interface BackendJob {
   job_id: string;
   dataset_id: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   progress: number;
   steps: {
     key: string;
@@ -166,6 +166,15 @@ export interface BackendBranches {
     units_coverable_by_transfer: number;
     flags: string[];
   }[];
+  /**
+   * Null until a forecast has run — `services/branches.py` returns
+   * `"network": None` when the dataset has no enriched rows yet.
+   *
+   * Declared nullable because it is. It was not, and a freshly uploaded project
+   * crashed the whole projects page on `network.series`: the caller checked
+   * that the request succeeded, which it had, and the service answered 200 with
+   * nothing in it.
+   */
   network: {
     branches: number;
     series: number;
@@ -173,7 +182,7 @@ export interface BackendBranches {
     dormant_rate_percent: number;
     demand_trend_percent: number;
     median_wape_percent: number | null;
-  };
+  } | null;
   transfers: unknown[];
   note: string | null;
 }
@@ -191,10 +200,11 @@ export interface BackendBranches {
  * is what kills adoption of a planning tool.
  */
 export interface BackendHierarchy {
+  /** Null before a forecast has run, for the same reason as `/branches`. */
   network: {
     horizon_total: number;
     per_period: number[];
-  };
+  } | null;
   branches: {
     location_id: string;
     horizon_total: number;

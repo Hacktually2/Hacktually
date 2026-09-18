@@ -93,15 +93,21 @@ export default async function ProjectsPage() {
         attempt(() => backend.getBranches(datasetId)),
         attempt(() => backend.getHierarchy(datasetId)),
       ]);
-      if (!insight.ok) return;
+      // Two different kinds of nothing. `!insight.ok` is the service failing;
+      // a null `network` is the service answering 200 to say it has no figures
+      // yet, which is what an uploaded-but-not-yet-forecast project looks like.
+      // Both mean no summary, and the card renders exactly as it did before.
+      if (!insight.ok || insight.data.network === null) return;
+      const network = insight.data.network;
+      const rolled = rollup.ok ? rollup.data : null;
 
       summaries.set(project.project_id, {
         datasetId,
-        series: insight.data.network.series,
-        attentionRatePercent: insight.data.network.attention_rate_percent,
-        medianWapePercent: insight.data.network.median_wape_percent,
-        horizonTotal: rollup.ok ? rollup.data.network.horizon_total : null,
-        coherent: rollup.ok ? (rollup.data.coherence?.coherent ?? null) : null,
+        series: network.series,
+        attentionRatePercent: network.attention_rate_percent,
+        medianWapePercent: network.median_wape_percent,
+        horizonTotal: rolled?.network?.horizon_total ?? null,
+        coherent: rolled?.coherence?.coherent ?? null,
       });
     }),
   );

@@ -14,6 +14,13 @@ import { formatNumber, formatPercent } from "@/lib/format";
 export const metadata: Metadata = { title: "Branch network" };
 
 /**
+ * A branch stores either `ds_x` or `prj-ds_x` for the same dataset, which is
+ * what `idVariants` in `auth/db.ts` exists to paper over. Stripping the prefix
+ * on both sides of a lookup does the same job in one line.
+ */
+const datasetKey = (id: string) => (id.startsWith("prj-") ? id.slice("prj-".length) : id);
+
+/**
  * The owner's map of the network; a manager's view of their own branch.
  *
  * One route, two products, the same way `team/page.tsx` works.
@@ -61,6 +68,8 @@ export default async function NetworkPage({
     }
   }
 
+  const cataloguePromise = attempt(() => backend.listDatasets());
+
   // The shared dataset gets ONE call, not one per branch.
   //
   // Six parallel `/overview` reads of a 311-series dataset each recompute the
@@ -85,6 +94,35 @@ export default async function NetworkPage({
       mergedDatasetId = datasetId;
     }
   }
+
+  // "No forecast yet" is two different situations wearing one label, and only
+  // one of them is the user's move. A dataset whose mapping was never confirmed
+  // is sitting on the review screen waiting for someone; a confirmed one with no
+  // numbers had a forecast start and not land — still running, or dead. Telling
+  // a demo audience to "wait" when the answer is "click confirm" is the kind of
+  // thing that reads as a broken product.
+  //
+  // `/datasets` is one call for the whole page and already carries the flag.
+  const catalogue = await cataloguePromise;
+  const confirmed = new Map<string, boolean>();
+  if (catalogue.ok) {
+    for (const row of catalogue.data) {
+      confirmed.set(datasetKey(row.dataset_id), Boolean(row.mapping_confirmed));
+    }
+  }
+
+  // Unknown means exactly that: the backend never answered, or has no such
+  // dataset. Both keep the old wording rather than inventing a diagnosis.
+  const pendingNote = (forecastProjectId: string) => {
+    switch (confirmed.get(datasetKey(forecastProjectId))) {
+      case false:
+        return "Columns are not confirmed yet — finish the review step and the forecast starts itself.";
+      case true:
+        return "A forecast was started for this branch but has not finished. It may still be running, or it may have failed.";
+      default:
+        return "No forecast has run for this branch yet.";
+    }
+  };
 
   const results = await Promise.all(
     branches.map(async (branch): Promise<BranchNode> => {
@@ -112,6 +150,8 @@ export default async function NetworkPage({
         return {
           ...base,
           seriesCount: insight.series_count || branch.product_count,
+          // Proven to match: `insight` was found under this key.
+          scope: branch.code,
           attentionShare:
             insight.series_count > 0
               ? insight.attention_count / insight.series_count
@@ -149,7 +189,7 @@ export default async function NetworkPage({
           attentionShare: null,
           coverageDays: null,
           bands: [],
-          note: "No forecast has run for this branch yet.",
+          note: pendingNote(branch.forecast_project_id),
         };
       }
 
@@ -193,7 +233,7 @@ export default async function NetworkPage({
         context={project.name}
       />
 
-      {isOwner && rollup && (
+      {isOwner && rollup?.network && (
         <div className="mt-6 flex flex-wrap items-end justify-between gap-4 rounded-md border border-border-subtle bg-surface-sunken/40 p-5">
           <div className="flex flex-wrap gap-x-10 gap-y-4">
             <div>

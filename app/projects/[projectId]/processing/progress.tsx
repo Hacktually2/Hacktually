@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { JobState } from "@/app/dummy-data/types";
-import { ButtonLink } from "@/components/ui/button";
-import { AlertTriangle, Check } from "@/components/ui/icons";
-import { pollJob } from "./actions";
+import { Button, ButtonLink } from "@/components/ui/button";
+import { AlertTriangle, Check, Clock, X } from "@/components/ui/icons";
+import { cancelJob, pollJob } from "./actions";
 
 /**
  * Processing progress (design.md §54, frontend_user_flow.md §58).
@@ -17,6 +17,17 @@ import { pollJob } from "./actions";
  */
 const POLL_MS = 1500;
 const STEP_MS = 1600;
+
+/**
+ * How long the percentage may sit still before this screen says so.
+ *
+ * Backtesting a wide network genuinely holds one number for a while — a
+ * thousand-series run can spend minutes inside one step — so this is not an
+ * error, and the run is not cancelled. It is the difference between a screen
+ * that is working and a screen that has stopped telling you anything, which is
+ * the whole reason a stuck job feels like a broken product.
+ */
+const STALL_MS = 90_000;
 
 export function ProcessingProgress({
   sequence,
@@ -37,44 +48,82 @@ export function ProcessingProgress({
   const [index, setIndex] = useState(0);
   const [liveJob, setLiveJob] = useState<JobState | null>(initialJob);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [stalled, setStalled] = useState(false);
+  const [stopped, setStopped] = useState(false);
+  // Requested, but the run has not noticed yet. Polling deliberately continues
+  // through this: the screen should show the run actually stopping rather than
+  // assert that it did.
+  const [stopping, setStopping] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  // Last time the percentage actually moved. A ref, not state: it is read to
+  // decide whether to flip `stalled`, and writing it must not itself schedule
+  // a render inside the poll that just wrote it.
+  //
+  // `at: 0` rather than a clock read, which is impure in a render. It is never
+  // compared before it is replaced: no real progress value equals -1, so the
+  // first poll always takes the "moved" branch and stamps a real time.
+  const moved = useRef({ progress: -1, at: 0 });
 
   const job = liveJob ?? sequence[index];
   const done = job.status === "completed";
   const failed = job.status === "failed";
+  const cancelled = job.status === "cancelled";
 
   // Live polling. Stops on a terminal state, and on an error rather than
   // hammering a service that is already unhappy.
   useEffect(() => {
-    if (!jobId || done || failed) return;
-    let cancelled = false;
+    if (!jobId || done || failed || cancelled || stopped) return;
+    let stale = false;
 
     const timer = setTimeout(async () => {
       try {
         const { job: next } = await pollJob(projectId, jobId);
-        if (!cancelled) setLiveJob(next);
+        if (stale) return;
+        setLiveJob(next);
+
+        if (next.progress !== moved.current.progress) {
+          moved.current = { progress: next.progress, at: Date.now() };
+          setStalled(false);
+        } else if (Date.now() - moved.current.at > STALL_MS) {
+          setStalled(true);
+        }
       } catch {
-        if (!cancelled) {
+        if (!stale) {
           setPollError("Lost contact with the forecasting service. Reload to try again.");
         }
       }
     }, POLL_MS);
 
     return () => {
-      cancelled = true;
+      stale = true;
       clearTimeout(timer);
     };
-  }, [jobId, projectId, done, failed, liveJob]);
+  }, [jobId, projectId, done, failed, cancelled, stopped, liveJob]);
 
   // Fixture walk, only when there is no real job behind this screen.
   useEffect(() => {
-    if (jobId || done) return;
+    if (jobId || done || stopped) return;
     const timer = setTimeout(() => setIndex((i) => Math.min(sequence.length - 1, i + 1)), STEP_MS);
     return () => clearTimeout(timer);
-  }, [jobId, done, index, sequence.length]);
+  }, [jobId, done, stopped, index, sequence.length]);
 
   useEffect(() => {
     if (done) router.prefetch(reviewHref);
   }, [done, router, reviewHref]);
+
+  const requestCancel = async () => {
+    if (!jobId) return setStopped(true);
+    setStopping(true);
+    setCancelError(null);
+    const { cancelled: accepted, error } = await cancelJob(projectId, jobId);
+    if (accepted) return; // Polling carries it the rest of the way.
+    // Either the job had already finished or the service was unreachable.
+    // Neither is worth trapping someone on this screen for.
+    setStopping(false);
+    setCancelError(error);
+    setStopped(true);
+  };
 
   return (
     <div>
@@ -82,9 +131,13 @@ export function ProcessingProgress({
         <p className="text-body font-semibold text-brand-deep">
           {failed
             ? "Processing failed"
-            : done
-              ? "Processing complete"
-              : (job.message ?? "Processing dataset")}
+            : cancelled
+              ? "Run cancelled"
+              : done
+                ? "Processing complete"
+                : stopping
+                  ? "Stopping…"
+                  : (job.message ?? "Processing dataset")}
         </p>
         <p className="text-body-sm font-semibold text-ink" data-numeric>
           {job.progress}%
@@ -115,6 +168,31 @@ export function ProcessingProgress({
         </p>
       )}
 
+      {cancelled && (
+        <p
+          className="mt-4 flex items-start gap-2 rounded-sm border border-border-default bg-surface-sunken px-3 py-2.5 text-body-sm text-ink-secondary"
+          role="status"
+        >
+          <X size={15} className="mt-0.5 shrink-0 text-ink-tertiary" />
+          Stopped at {job.progress}%. Nothing was saved from this run — start it again from the
+          review screen when you are ready.
+        </p>
+      )}
+
+      {stalled && !done && !failed && !cancelled && !stopping && !stopped && (
+        <p
+          className="mt-4 flex items-start gap-2 rounded-sm border border-status-risk/25 bg-status-risk-surface px-3 py-2.5 text-body-sm text-ink"
+          role="status"
+        >
+          <Clock size={15} className="mt-0.5 shrink-0 text-status-risk" />
+          <span>
+            Still on {job.progress}% after {Math.round(STALL_MS / 1000)} seconds. Backtesting a
+            wide network can genuinely sit on one number this long, so nothing is necessarily
+            wrong — but you do not have to sit here for it.
+          </span>
+        </p>
+      )}
+
       <ol className="mt-7 space-y-3.5">
         {job.steps.map((step) => (
           <li key={step.key} className="flex items-start gap-3">
@@ -142,11 +220,63 @@ export function ProcessingProgress({
           <ButtonLink href={reviewHref} size="lg">
             Review detected columns
           </ButtonLink>
+        ) : cancelled ? (
+          <div className="flex flex-wrap gap-2">
+            <ButtonLink href={reviewHref}>Back to project</ButtonLink>
+            <ButtonLink href="/projects" variant="secondary">
+              All projects
+            </ButtonLink>
+          </div>
+        ) : stopped ? (
+          <div>
+            <p className="flex items-start gap-2 text-body-sm leading-relaxed text-ink-secondary">
+              <X size={15} className="mt-0.5 shrink-0 text-ink-tertiary" />
+              {/* Said plainly, because the alternative is a button that claims to
+                  kill something and does not. This stops the watching, which is
+                  the part that belongs to this screen. */}
+              <span>
+                {cancelError
+                  ? `Stopped watching, but the run could not be cancelled: ${cancelError} It may still be going.`
+                  : "Stopped watching. This run had already finished or was past the point of stopping, so it may still complete on its own."}
+              </span>
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <ButtonLink href="/projects" variant="secondary">
+                All projects
+              </ButtonLink>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  // Fresh mark, or a run that moved while nobody watched is
+                  // declared stalled the moment we look again.
+                  moved.current = { progress: -1, at: Date.now() };
+                  setStalled(false);
+                  setStopped(false);
+                }}
+              >
+                Watch again
+              </Button>
+            </div>
+          </div>
         ) : (
-          <p className="text-body-sm text-ink-secondary">
-            You can leave this page. Processing continues and the project appears as ready when
-            it finishes.
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-md text-body-sm text-ink-secondary">
+              {stopping
+                ? "Asked the forecasting service to stop. It stops at the end of the batch it is in, so this can take a few seconds."
+                : "You can leave this page. Processing continues and the project appears as ready when it finishes."}
+            </p>
+            <Button
+              type="button"
+              variant={stalled ? "secondary" : "ghost"}
+              size="sm"
+              disabled={stopping}
+              onClick={requestCancel}
+            >
+              <X size={14} />
+              {stopping ? "Stopping…" : "Stop this run"}
+            </Button>
+          </div>
         )}
       </div>
     </div>

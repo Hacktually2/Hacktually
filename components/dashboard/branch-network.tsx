@@ -1,8 +1,8 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { RiskLevel } from "@/app/dummy-data/types";
-import { AlertTriangle, ArrowRight, Database, Layers } from "@/components/ui/icons";
+import { AlertTriangle, ArrowRight, Database, Layers, X } from "@/components/ui/icons";
 import { Panel } from "@/components/ui/panel";
 import { RiskBadge } from "@/components/ui/status";
 import { formatNumber, formatPercent } from "@/lib/format";
@@ -39,6 +39,16 @@ export interface BranchNode {
   seriesCount: number;
   /** Share of items needing ordering attention, 0–1. Null: no run yet. */
   attentionShare: number | null;
+  /**
+   * The value that scopes a dashboard to this branch, when one is known.
+   *
+   * Only set when this branch's numbers came from a dataset that holds several
+   * branches, because that is the only case where the branch code is proven to
+   * match the dataset's own location value — we looked it up by that key and
+   * found it. For a branch with its own dataset the whole dashboard is already
+   * this branch, so there is nothing to scope.
+   */
+  scope?: string | null;
   coverageDays: number | null;
   bands: { risk: RiskLevel; label: string; series_count: number }[];
   /** Why this branch has no numbers, when it has none. */
@@ -97,12 +107,37 @@ export function BranchNetwork({
   /** Owner only. Managers must not be shown figures spanning other branches. */
   networkAttentionShare: number | null;
 }) {
-  const [activeId, setActiveId] = useState<string | null>(null);
+  /**
+   * Two kinds of selection, deliberately separate.
+   *
+   * `pinnedId` is a choice: made by a click or Enter, and it survives the
+   * pointer leaving. `hoverId` is a preview. Before this, hover was the only
+   * mechanism and `onMouseLeave` cleared it — so reading the detail panel meant
+   * keeping the cursor on the bubble, and moving towards the panel erased the
+   * thing you were moving towards. On a touch screen, where there is no hover
+   * at all, nothing worked.
+   */
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [view, setView] = useState<"chart" | "list">("chart");
+  const activeId = hoverId ?? pinnedId;
   const titleId = useId();
 
   const plotted = branches.filter((b) => b.attentionShare !== null);
   const pending = branches.filter((b) => b.attentionShare === null);
   const active = branches.find((b) => b.id === activeId) ?? null;
+
+  /** Click, Enter or Space on a branch. Clicking the pinned one unpins it. */
+  const toggle = (id: string) => setPinnedId((current) => (current === id ? null : id));
+
+  useEffect(() => {
+    if (pinnedId === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPinnedId(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pinnedId]);
 
   if (branches.length === 0) {
     return (
@@ -112,6 +147,34 @@ export function BranchNetwork({
         </p>
       </Panel>
     );
+  }
+
+  const pendingPanel =
+    pending.length > 0 ? (
+      <Panel
+        title={`${pending.length} branch${pending.length === 1 ? "" : "es"} not on the chart`}
+        description="No forecast result to plot for these — each row says why. They are listed rather than placed at zero, which would read as healthy."
+      >
+        <ul className="space-y-2">
+          {pending.map((branch) => (
+            <li key={branch.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="text-body-sm font-semibold text-ink">{branch.code}</span>
+              <span className="text-body-sm text-ink-secondary">{branch.location}</span>
+              <span className="text-meta text-ink-tertiary">
+                — {branch.note ?? "no forecast yet"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    ) : null;
+
+  // Nothing to plot means no branch has been forecast yet. Drawing the chart
+  // anyway gives you empty axes under the heading "LARGE AND STRUGGLING — LOOK
+  // HERE FIRST", a network average of 0%, and a caption inviting you to click
+  // bubbles that are not there. The pending list is the whole truth here.
+  if (plotted.length === 0) {
+    return <div className="space-y-5">{pendingPanel}</div>;
   }
 
   // Axes. The x ceiling never drops below 40% so a healthy network does not get
@@ -136,19 +199,43 @@ export function BranchNetwork({
 
   const xTicks = [0, 0.15, 0.3, 0.45, 0.6].filter((t) => t <= maxAttention);
 
+  // Deduplicated, because on a small network the three stops collapse onto each
+  // other: with one branch carrying one product, maxSeries is 1.15 and both
+  // Math.round(maxSeries / 2) and Math.round(maxSeries * 0.9) are 1. That gave
+  // React two children keyed `1`, and would have drawn two labels at the same
+  // y anyway — an axis reading "1, 1" rather than an axis.
+  const yTicks = [...new Set([0, Math.round(maxSeries / 2), Math.round(maxSeries * 0.9)])];
+
   return (
     <div className="space-y-5">
       <Panel
         title={isOwner ? "Branch network" : "Your branch"}
         description={
           isOwner
-            ? "Right is more of the catalogue needing attention. Up is more catalogue carried. Bubble size is share of network demand. Look up and to the right first."
+            ? view === "chart"
+              ? "Right is more of the catalogue needing attention. Up is more catalogue carried. Bubble size is share of network demand. Look up and to the right first."
+              : "Every branch, worst first. The same numbers the chart plots, when you want to read them rather than eyeball them."
             : "Where your branch sits on attention needed against catalogue carried."
         }
         padded={false}
+        action={
+          plotted.length > 0 ? (
+            <ViewToggle value={view} onChange={setView} />
+          ) : undefined
+        }
       >
         <div className="grid gap-0 border-t border-border-subtle lg:grid-cols-[1fr_minmax(0,320px)]">
-          <div className="p-4">
+          <div className={view === "chart" ? "p-4" : "p-0"}>
+            {view === "list" ? (
+              <BranchList
+                branches={worst}
+                activeId={activeId}
+                pinnedId={pinnedId}
+                maxAttention={maxAttention}
+                onHover={setHoverId}
+                onToggle={toggle}
+              />
+            ) : (
             <svg
               viewBox={`0 0 ${W} ${H}`}
               className="h-auto w-full"
@@ -258,7 +345,7 @@ export function BranchNetwork({
               >
                 Products carried
               </text>
-              {[0, Math.round(maxSeries / 2), Math.round(maxSeries * 0.9)].map((tick) => (
+              {yTicks.map((tick) => (
                 <text
                   key={tick}
                   x={PAD.left - 8}
@@ -280,24 +367,50 @@ export function BranchNetwork({
                 const band = bandOf(share);
                 const dim = activeId !== null && activeId !== branch.id;
                 const isActive = activeId === branch.id;
+                const isPinned = pinnedId === branch.id;
 
                 return (
                   <g
                     key={branch.id}
                     tabIndex={0}
                     role="button"
+                    aria-pressed={isPinned}
                     aria-label={
                       `${branch.code}, ${branch.location}. ` +
                       `${formatPercent(share * 100)} of ${formatNumber(branch.seriesCount)} ` +
-                      `products need attention.`
+                      `products need attention.` +
+                      (isPinned ? " Selected." : "")
                     }
                     className="cursor-pointer outline-none"
-                    onMouseEnter={() => setActiveId(branch.id)}
-                    onMouseLeave={() => setActiveId(null)}
-                    onFocus={() => setActiveId(branch.id)}
-                    onBlur={() => setActiveId(null)}
+                    onClick={() => toggle(branch.id)}
+                    onKeyDown={(event) => {
+                      // A thing that says role="button" has to answer to a
+                      // keyboard the way a button does.
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggle(branch.id);
+                      }
+                    }}
+                    onMouseEnter={() => setHoverId(branch.id)}
+                    onMouseLeave={() => setHoverId(null)}
+                    onFocus={() => setHoverId(branch.id)}
+                    onBlur={() => setHoverId(null)}
                     opacity={dim ? 0.4 : 1}
                   >
+                    {isPinned && (
+                      // A pinned branch keeps a ring after the pointer leaves,
+                      // so the panel beside it always has a visible owner.
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={r + 10}
+                        fill="none"
+                        stroke={band ? FILL[band] : "var(--color-border-default)"}
+                        strokeWidth={1.5}
+                        strokeDasharray="3 3"
+                        opacity={0.9}
+                      />
+                    )}
                     {isActive && (
                       <circle
                         cx={cx}
@@ -338,8 +451,9 @@ export function BranchNetwork({
                 );
               })}
             </svg>
+            )}
 
-            <Legend />
+            {view === "chart" && <Legend />}
           </div>
 
           <div className="border-t border-border-subtle p-5 lg:border-t-0 lg:border-l">
@@ -347,6 +461,8 @@ export function BranchNetwork({
               <BranchDetail
                 branch={active}
                 networkAttentionShare={isOwner ? networkAttentionShare : null}
+                pinned={pinnedId === active.id}
+                onClear={() => setPinnedId(null)}
               />
             ) : (
               <div className="flex h-full flex-col justify-center">
@@ -354,8 +470,9 @@ export function BranchNetwork({
                   {isOwner ? "Pick a branch" : "Your branch"}
                 </p>
                 <p className="mt-1.5 text-body-sm leading-relaxed text-ink-secondary">
-                  Hover a bubble, or tab through them, to see what that branch is carrying
-                  and what needs ordering.
+                  {view === "chart"
+                    ? "Click a bubble to keep it selected, or tab through them, to see what that branch is carrying and what needs ordering."
+                    : "Select a row to see what that branch is carrying and what needs ordering."}
                 </p>
                 {isOwner && worst.length > 0 && (
                   <p className="mt-4 flex items-start gap-2 text-body-sm text-ink-secondary">
@@ -373,25 +490,139 @@ export function BranchNetwork({
         </div>
       </Panel>
 
-      {pending.length > 0 && (
-        <Panel
-          title={`${pending.length} branch${pending.length === 1 ? "" : "es"} not on the chart`}
-          description="No forecast has run for these, so they have no attention rate to plot. They are listed rather than placed at zero, which would read as healthy."
-        >
-          <ul className="space-y-2">
-            {pending.map((branch) => (
-              <li key={branch.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="text-body-sm font-semibold text-ink">{branch.code}</span>
-                <span className="text-body-sm text-ink-secondary">{branch.location}</span>
-                <span className="text-meta text-ink-tertiary">
-                  — {branch.note ?? "no forecast yet"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      )}
+      {pendingPanel}
     </div>
+  );
+}
+
+/**
+ * Chart or list, on the same data.
+ *
+ * Two links would reload the page and lose the selection; a dropdown hides one
+ * option behind a click. Two buttons, both visible, is the smallest thing that
+ * reads as "same data, other lens" — which is what it is: both views drive the
+ * same selection and the same detail panel beside them.
+ */
+function ViewToggle({
+  value,
+  onChange,
+}: {
+  value: "chart" | "list";
+  onChange: (next: "chart" | "list") => void;
+}) {
+  return (
+    <div
+      className="flex gap-1 rounded-sm border border-border-subtle p-0.5"
+      role="group"
+      aria-label="How to show the branches"
+    >
+      {(
+        [
+          ["chart", "Chart", Layers],
+          ["list", "List", Database],
+        ] as const
+      ).map(([key, label, Icon]) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => onChange(key)}
+          aria-pressed={value === key}
+          className={`flex items-center gap-1.5 rounded-xs px-2.5 py-1 text-meta font-semibold transition-colors duration-(--duration-fast) ${
+            value === key
+              ? "bg-brand-pale text-brand-deep"
+              : "text-ink-secondary hover:text-brand-deep"
+          }`}
+        >
+          <Icon size={13} />
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The same branches as a table, worst first.
+ *
+ * The chart answers "where do I look"; this answers "what exactly are the
+ * numbers". Rows are real buttons so the keyboard and a screen reader get the
+ * same behaviour the bubbles have, and selecting one drives the detail panel
+ * beside it — switching view never loses your place.
+ */
+function BranchList({
+  branches,
+  activeId,
+  pinnedId,
+  maxAttention,
+  onHover,
+  onToggle,
+}: {
+  branches: BranchNode[];
+  activeId: string | null;
+  pinnedId: string | null;
+  maxAttention: number;
+  onHover: (id: string | null) => void;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <ul className="divide-y divide-border-subtle">
+      {branches.map((branch) => {
+        const share = branch.attentionShare ?? 0;
+        const band = bandOf(share);
+        const isPinned = pinnedId === branch.id;
+        const isActive = activeId === branch.id;
+
+        return (
+          <li key={branch.id}>
+            <button
+              type="button"
+              onClick={() => onToggle(branch.id)}
+              onMouseEnter={() => onHover(branch.id)}
+              onMouseLeave={() => onHover(null)}
+              onFocus={() => onHover(branch.id)}
+              onBlur={() => onHover(null)}
+              aria-pressed={isPinned}
+              className={`w-full px-5 py-3 text-left transition-colors duration-(--duration-fast) ${
+                isActive ? "bg-brand-pale-soft/60" : "hover:bg-brand-pale-soft/40"
+              }`}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <span className="min-w-0">
+                  <span className="text-body-sm font-semibold text-ink">{branch.code}</span>
+                  <span className="ml-2 text-body-sm text-ink-secondary">
+                    {branch.location}
+                  </span>
+                </span>
+                <span className="flex items-baseline gap-3 text-meta text-ink-tertiary">
+                  <span data-numeric>{formatNumber(branch.seriesCount)} products</span>
+                  {branch.unitsToOrder != null && (
+                    <span data-numeric>{formatNumber(branch.unitsToOrder)} to order</span>
+                  )}
+                  <span
+                    className="text-body-sm font-semibold text-ink tabular-nums"
+                    data-numeric
+                  >
+                    {formatPercent(share * 100)}
+                  </span>
+                </span>
+              </div>
+
+              {/* The bar is the chart's x-axis, one row at a time: same
+                  quantity, same scale, so the two views cannot disagree. */}
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-sunken">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${Math.min(100, (share / maxAttention) * 100)}%`,
+                    background: band ? FILL[band] : "var(--color-border-default)",
+                  }}
+                />
+              </div>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -419,9 +650,14 @@ function Legend() {
 function BranchDetail({
   branch,
   networkAttentionShare,
+  pinned,
+  onClear,
 }: {
   branch: BranchNode;
   networkAttentionShare: number | null;
+  /** True when this branch was chosen rather than merely hovered. */
+  pinned: boolean;
+  onClear: () => void;
 }) {
   const band = bandOf(branch.attentionShare);
   const delta =
@@ -436,7 +672,21 @@ function BranchDetail({
           <p className="text-body font-bold text-brand-deep">{branch.code}</p>
           <p className="text-body-sm text-ink-secondary">{branch.location}</p>
         </div>
-        {band && <RiskBadge risk={band} size="sm" />}
+        <div className="flex shrink-0 items-center gap-2">
+          {band && <RiskBadge risk={band} size="sm" />}
+          {pinned && (
+            // Clicking the same branch again also clears it, but that is not
+            // something anyone discovers. This is.
+            <button
+              type="button"
+              onClick={onClear}
+              className="rounded-sm p-1 text-ink-tertiary transition-colors duration-(--duration-fast) hover:bg-surface-sunken hover:text-ink"
+              aria-label={`Clear ${branch.code}`}
+            >
+              <X size={15} />
+            </button>
+          )}
+        </div>
       </div>
 
       {branch.attentionShare === null ? (
@@ -528,7 +778,13 @@ function BranchDetail({
 
       {branch.forecastProjectId && (
         <a
-          href={`/projects/${branch.forecastProjectId}/dashboard`}
+          href={
+            `/projects/${branch.forecastProjectId}/dashboard` +
+            // Without this every kota on the map opened the same network-wide
+            // dashboard, because a shared dataset means one project id for all
+            // of them and the id alone cannot say which branch was clicked.
+            (branch.scope ? `?branch=${encodeURIComponent(branch.scope)}` : "")
+          }
           className="mt-5 inline-flex items-center gap-1.5 text-body-sm font-semibold text-brand-blue-ink hover:text-brand-blue-hover"
         >
           <Layers size={14} />

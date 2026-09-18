@@ -1127,6 +1127,10 @@ def job(job_id: str) -> dict:
         status, progress = "completed", 100
     elif row["status"] == "failed":
         status = "failed"
+    elif row["status"] == "cancelled":
+        # Progress is left where it stopped rather than zeroed: how far it got
+        # before someone gave up is the useful part.
+        status = "cancelled"
 
     # Step keys stay constant across polls so rows never reorder mid-run, and
     # the index comes from the stage the pipeline reported rather than from the
@@ -1134,12 +1138,14 @@ def job(job_id: str) -> dict:
     reached = STAGE_TO_STEP.get(stage, 1)
     if row["status"] == "completed":
         reached = len(JOB_STEPS)
-    elif row["status"] == "failed":
+    elif row["status"] in ("failed", "cancelled"):
         reached = min(reached, len(JOB_STEPS) - 1)
 
     steps = []
     for index, (key, label) in enumerate(JOB_STEPS):
-        if status == "failed" and index == reached:
+        if status in ("failed", "cancelled") and index == reached:
+            # Not "active": a stopped run must not keep a step pulsing as
+            # though something were still happening in it.
             state = "failed"
         elif index < reached:
             state = "done"
@@ -1155,5 +1161,9 @@ def job(job_id: str) -> dict:
         "status": status,
         "progress": max(0, min(100, progress)),
         "steps": steps,
-        "message": row["error"] if row["status"] == "failed" else (row["stage"] or None),
+        "message": (
+            row["error"]
+            if row["status"] in ("failed", "cancelled")
+            else (row["stage"] or None)
+        ),
     }

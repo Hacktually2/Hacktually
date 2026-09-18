@@ -31,7 +31,9 @@ export type JobStatus =
   | "forecasting"
   | "validating"
   | "completed"
-  | "failed";
+  | "failed"
+  /** Stopped on request. Terminal, and not a failure. */
+  | "cancelled";
 
 /* ------------------------------------------------------------------ projects */
 
